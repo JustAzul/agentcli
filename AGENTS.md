@@ -36,3 +36,17 @@ commit out and list the others since the previous version.
 Anything under `plugin/`, `cmd/` or `internal/`, `go.mod`, `go.sum` or
 `scripts/build-dist.sh` changes the build and needs a bump. A change limited to
 `README.md`, `docs/`, tests, the CI workflows or the release scripts does not.
+
+## Before pushing a change to the plugin
+
+A change under `plugin/` can leave the mod unable to load, and then every hook
+of the plugin is gone for the whole session and for every plugin that calls the
+`agentcli` interface. The plugin tests cannot see it: a test's `$` carries only
+the engine's own interfaces, so the plugin's interface is never mounted there.
+
+Run `make verify-plugin` before every push that touches `plugin/`. It starts
+`claude -p` with this plugin, in a temporary directory with no session kept and
+a main model that does not exist, so nothing is spent on a model; it reads the
+debug log and fails unless the `agentcli` interface is mounted and the module
+loaded. The interface is an object of methods and nothing else: a member that is
+not a function unloads the plugin.

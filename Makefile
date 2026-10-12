@@ -13,7 +13,7 @@ DOCKER_GO = docker run --rm --label agentcli.dev=1 -u $$(id -u):$$(id -g) \
   -e GOFLAGS=-buildvcs=false -e CGO_ENABLED=0 \
   $(GO_IMAGE)
 
-.PHONY: test vet vet-darwin fmt build cache dist
+.PHONY: test vet vet-darwin fmt build cache dist verify-plugin
 
 cache:
 	mkdir -p $(CACHE_DIR)/mod $(CACHE_DIR)/build
@@ -40,3 +40,9 @@ build: cache
 dist: cache
 	rm -rf dist
 	$(DOCKER_GO) env SOURCE_SHA=$(SOURCE_SHA) BUILD_SEQ=$(BUILD_SEQ) sh scripts/build-dist.sh dist
+
+# Loads the plugin in a real Claude Code process, with no model spend, and fails
+# unless its `agentcli` interface mounts. Needs claude on PATH; run it before
+# any push that touches plugin/.
+verify-plugin:
+	scripts/verify-plugin.sh

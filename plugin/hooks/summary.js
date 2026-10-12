@@ -95,10 +95,10 @@ export function isBilled(result) {
   return USAGE_COUNTS.some((count) => typeof usage?.[count] === 'number' && usage[count] > 0)
 }
 
-// usageAddCommand records one billed completion, whose usage goes on standard
-// input.
-export function usageAddCommand(bin, sessionId, runId) {
-  return [bin, 'usage', 'add', '--session-id', sessionId, '--provider', 'anthropic', '--model', SUMMARY_MODEL, '--source', 'mod-summary', '--run-id', runId, '--json']
+// summaryRecording is the record of one billed summary completion, made for a
+// run in the session that was running it.
+export function summaryRecording(usage, sessionId, runId) {
+  return { usage, sessionId, model: SUMMARY_MODEL, source: 'mod-summary', runId }
 }
 
 export function isRateLimited(result) {

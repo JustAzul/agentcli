@@ -292,6 +292,26 @@ test('a recording that failed is tried again on the next poll with the same stan
   expect(usageRuns(w).length).toBe(failed + 1)
 })
 
+test('a recording that failed is tried again for the session it was made in, not the one running by then', async ($, on) => {
+  const w = world(on)
+  billedBy(w)
+  let isBusy = true
+  flagged(w, () => (isBusy ? BUSY : ok('')))
+  await $.session.start(START)
+
+  await w.clock.advance(POLL_MS)
+  expect(recordFailures(w)).toHaveLength(1)
+
+  isBusy = false
+  w.sessionId = 'sess-2'
+  const failed = usageRuns(w).length
+  await w.clock.advance(POLL_MS)
+
+  const retry = usageRuns(w).at(-1)!
+  expect(usageRuns(w).length).toBe(failed + 1)
+  expect(retry.argv[retry.argv.indexOf('--session-id') + 1]).toBe(SESSION)
+})
+
 test('a recording that succeeds on a retry makes the same poll read the costs again', async ($, on) => {
   const w = world(on)
   billedBy(w)

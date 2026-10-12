@@ -64,7 +64,9 @@ import {
 } from './prices.js'
 import { BAND_REFRESH_MS, bandLine, flaggedRuns, followedRuns, labelled, withProgress } from './band.js'
 import { createSummarizer } from './summarizer.js'
-import { usageAddCommand } from './summary.js'
+import { NOUN, createService } from './service.js'
+import { summaryRecording } from './summary.js'
+import { modelCallCommand } from './modelcall.js'
 import { ETA_TIMEOUT_MS, ETA_UNAVAILABLE, etaCommand, etaText, endedSince, finishedTail, isAnnounceable, listedRuns, spawnNotice } from './spawn.js'
 
 const COMMAND = 'agentcli-jobs'
@@ -169,6 +171,8 @@ let isSkippedRunLogged = false
 let spawnWrites = Promise.resolve()
 // The progress summaries of this load, which the config of the load decides.
 let summaries = createSummarizer({})
+// The agentcli.complete calls this load is serving.
+let service = createService()
 // Conversation records are read, changed and written back; one write at a time
 // keeps two agents admitted together from dropping each other's record.
 let conversationWrites = Promise.resolve()
@@ -177,6 +181,13 @@ export function register(on, options) {
   summaries = createSummarizer(options ?? {})
   pendingRecordings.length = 0
   isLossToastShown = false
+  service = createService()
+  // Only the spread and the noun: a step that fails unloads the whole plugin.
+  on('engine.create', async (_$, e, next) => ({ ...(await next(e)), agentcli: NOUN }))
+  // The caller reads the denial's prefix to know whether the model was called.
+  on('agentcli.complete', ($, e, next) => service.serve(servicePorts($), e, { signal: next.signal, caller: next.origin.plugin })).catch((_$, e, next) =>
+    service.failed(e, next.error.kind),
+  )
   on('session.start', async ($, e, next) => {
     await registerTools($)
     await registerAgentTypes($)
@@ -831,7 +842,7 @@ function summaryPorts($) {
     surfaces: () => $.session.surfaces(),
     now: () => $.clock.now(),
     complete: (request) => $.model.complete(request),
-    record: (usage, runId) => recordUsage($, usage, runId),
+    record: (usage, runId) => recordSummary($, usage, runId),
     log: (text) => $.ui.log(text, { to: 'debug' }),
     labelSettled: (runId) => {
       if ([...turnAgents.values()].some((agent) => agent.runId === runId)) $.ui.invalidate('ui.render')
@@ -839,22 +850,45 @@ function summaryPorts($) {
   }
 }
 
-// recordUsage hands a billed summary call to `usage add`. It never throws; a
-// recording that fails is kept to be tried again, and its failure is logged once
-// until one recording succeeds.
-async function recordUsage($, usage, runId) {
-  const failure = await addUsage($, usage, runId)
+// servicePorts is what the agentcli.complete service uses of the engine.
+function servicePorts($) {
+  return {
+    sessionId: () => $.session.id(),
+    now: () => $.clock.now(),
+    haikuPin: () => $.env.get('ANTHROPIC_DEFAULT_HAIKU_MODEL'),
+    complete: (request, signal) => $.model.complete(request, { signal }),
+    record: (recording) => recordCall($, recording),
+  }
+}
+
+// recordSummary hands a billed summary call to `usage add`, for the session that
+// is running it now: the recording keeps that session, whatever a retry meets.
+async function recordSummary($, usage, runId) {
+  let sessionId
+  try {
+    sessionId = await $.session.id()
+  } catch (error) {
+    return logRecordFailure($, messageOf(error))
+  }
+  await recordCall($, summaryRecording(usage, sessionId, runId))
+}
+
+// recordCall hands a recording to `usage add`. It never throws; a recording that
+// fails is kept to be tried again, and its failure is logged once until one
+// recording succeeds.
+async function recordCall($, recording) {
+  const failure = await addUsage($, recording)
   if (failure === null) return
-  keepRecording($, { usage, runId })
+  keepRecording($, recording)
   logRecordFailure($, failure)
 }
 
-// addUsage runs `usage add` once and returns null when it recorded the call, else
-// why it did not.
-async function addUsage($, usage, runId) {
+// addUsage runs `usage add` once for the recording and returns null when it
+// recorded the call, else why it did not.
+async function addUsage($, recording) {
   try {
-    const argv = usageAddCommand(shimPath($.plugin.root), await $.session.id(), runId)
-    const reply = await $.process.run(argv, { stdin: JSON.stringify(usage) })
+    const argv = modelCallCommand(shimPath($.plugin.root), recording)
+    const reply = await $.process.run(argv, { stdin: JSON.stringify(recording.usage) })
     if (reply.exitCode !== 0) return failureText(reply)
     isRecordFailureLogged = false
     usageAdds += 1
@@ -891,7 +925,7 @@ function reportLostRecording($) {
 // the first that fails again, which stays first.
 async function retryRecordings($) {
   for (const recording of [...pendingRecordings]) {
-    const failure = await addUsage($, recording.usage, recording.runId)
+    const failure = await addUsage($, recording)
     if (failure !== null) return logRecordFailure($, failure)
     // A recording kept meanwhile may have pushed this one out of the list.
     const index = pendingRecordings.indexOf(recording)
