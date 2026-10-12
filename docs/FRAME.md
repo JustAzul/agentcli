@@ -218,8 +218,10 @@ per line. Field order is the on-disk order:
 ```
 
 - `call_id` is `m-<UTC yyyymmddThhmmssZ>-<8 lowercase hex>`, minted by `usage add`
-  with the generator of run ids and the prefix `m`.
-- `ts` is RFC 3339 UTC to the second, like a run record's. For a model call it is the time `usage add` records it.
+  with the generator of run ids and the prefix `m`, unless `--call-id` gives it
+  (`[A-Za-z0-9][A-Za-z0-9:._-]{0,199}`).
+- `ts` is RFC 3339 UTC to the second, like a run record's. For a model call it is the time `usage add` records it, or `--ts`; the record goes in the month file of that time.
+- `attrs` is present only when `usage add` is given `--attr key=value`: at most 32 keys of `[a-z_]{1,32}`, values up to 200 characters. It follows `usage`.
 - `run_id` is the run the call was about, or `null`.
 - `usage` has agentcli's usage shape (the `provider.Usage` JSON tags, in the order
   above). `input_tokens` is the total input, including the cached and cache-write

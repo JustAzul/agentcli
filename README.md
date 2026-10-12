@@ -217,6 +217,14 @@ appends a `model_call` record instead: provider, model, source, session id,
 the run it was about and its token usage. `agentcli usage add` writes it;
 runs and their counts never include it.
 
+`usage add` also takes `--call-id <id>`, the call's own id (a call recorded
+twice under one id counts once), `--attr <key>=<value>`, repeatable, for an
+`attrs` object on the record (keys of `a-z` and `_`, at most 32 attrs, values up
+to 200 characters), and `--ts <RFC 3339>`, when the call was made, which also
+picks the month file the record goes in. Without them the id is generated, the
+record has no `attrs` and the time is now. A reader that predates `attrs` reads
+the record and ignores them.
+
 Attributes are how consumers add data without a schema change:
 
 ```sh
@@ -279,7 +287,9 @@ agentcli stats --session-id "$CLAUDE_CODE_SESSION_ID" --all --json | jq .usage_b
   is priced exactly as reported.
 - `usage_totals` is what the runs cost. `usage_by_provider` splits it per
   provider and adds the model calls (`anthropic`), each with its own
-  `cost_usd`.
+  `cost_usd`. `model_calls_by_source` counts the model calls of each source
+  (`mod-summary`, `mod:<plugin>`) with their tokens and `cost_usd`; a call id
+  recorded twice counts once.
 - Costs are exact (no floating point) and rounded once: 6 decimals in JSON,
   cents in text.
 - A model the price list does not price (`gpt-reserve`, `codex-auto-review`)

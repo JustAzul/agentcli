@@ -242,3 +242,87 @@ func TestPricesRefreshWantsTheModelsOfModelCalls(t *testing.T) {
 		t.Errorf("cache anthropic models = %v, want %v", got, wantModels)
 	}
 }
+
+// recordCall runs `usage add` for a call of the standard usage.
+func recordCall(t *testing.T, s *sandbox, source string, extra ...string) {
+	t.Helper()
+	s.stdin = anthropicUsage
+	args := append([]string{"usage", "add", "--session-id", "S", "--provider", "anthropic", "--model", "claude-haiku-5-5", "--source", source}, extra...)
+	if r := s.run(args...); r.code != 0 {
+		t.Fatalf("usage add exit %d: %s", r.code, r.stderr)
+	}
+}
+
+func TestStatsGroupsModelCallsBySourceAndCountsACallIDOnce(t *testing.T) {
+	s := newSandbox(t)
+	claudeCache(t, s)
+	recordCall(t, s, "mod:followups", "--call-id", "followups:chk-1:e1:v0plus")
+	// The same call recorded again, as a retry of a recording that failed does.
+	recordCall(t, s, "mod:followups", "--call-id", "followups:chk-1:e1:v0plus")
+	recordCall(t, s, "mod:followups", "--call-id", "followups:chk-1:e1:consolidate")
+	recordCall(t, s, "mod-summary")
+
+	stats := windowStats(t, s, "--session-id", "S")
+
+	// One call is 578 input tokens (100 read, 20 written), 18 out: 58.3 millionths of a dollar.
+	want := map[string]any{
+		"mod:followups": map[string]any{
+			"calls": float64(2), "input_tokens": float64(1156), "cached_input_tokens": float64(200),
+			"cache_write_input_tokens": float64(40), "output_tokens": float64(36), "cost_usd": "0.000117",
+		},
+		"mod-summary": map[string]any{
+			"calls": float64(1), "input_tokens": float64(578), "cached_input_tokens": float64(100),
+			"cache_write_input_tokens": float64(20), "output_tokens": float64(18), "cost_usd": "0.000058",
+		},
+	}
+	if got := obj(t, stats["model_calls_by_source"]); !reflect.DeepEqual(got, want) {
+		t.Errorf("model_calls_by_source = %v, want %v", got, want)
+	}
+	if stats["total"] != float64(0) {
+		t.Errorf("total = %v: model calls are not runs", stats["total"])
+	}
+}
+
+func TestStatsModelCallsBySourceIsEmptyWithoutModelCalls(t *testing.T) {
+	s := newSandbox(t)
+	stats := windowStats(t, s)
+	if got, ok := stats["model_calls_by_source"].(map[string]any); !ok || len(got) != 0 {
+		t.Errorf("model_calls_by_source = %#v, want {}", stats["model_calls_by_source"])
+	}
+}
+
+func TestStatsModelCallsBySourceHasNoCostForAnUnpricedModel(t *testing.T) {
+	s := newSandbox(t)
+	recordCall(t, s, "mod:followups", "--call-id", "c1")
+
+	got := obj(t, obj(t, windowStats(t, s, "--session-id", "S")["model_calls_by_source"])["mod:followups"])
+	if got["calls"] != float64(1) || got["cost_usd"] != nil {
+		t.Errorf("mod:followups = %v, want one call and no cost", got)
+	}
+}
+
+func TestStatsCountsACallRecordedTwiceWithItsTimeOnce(t *testing.T) {
+	s := newSandbox(t)
+	recordCall(t, s, "mod:followups", "--call-id", "c1", "--ts", time.Now().UTC().Add(-time.Hour).Format(time.RFC3339))
+	recordCall(t, s, "mod:followups", "--call-id", "c1", "--ts", time.Now().UTC().Add(-time.Hour).Format(time.RFC3339))
+
+	got := obj(t, obj(t, windowStats(t, s, "--session-id", "S", "--days", "2")["model_calls_by_source"])["mod:followups"])
+	if got["calls"] != float64(1) {
+		t.Errorf("calls = %v, want 1", got["calls"])
+	}
+}
+
+func TestStatsTextNamesTheCallsOfEachSource(t *testing.T) {
+	s := newSandbox(t)
+	recordCall(t, s, "mod:followups", "--call-id", "c1")
+	recordCall(t, s, "mod:followups", "--call-id", "c2")
+	recordCall(t, s, "mod-summary")
+
+	r := s.run("stats", "--session-id", "S")
+	if r.code != 0 {
+		t.Fatalf("exit %d: %s", r.code, r.stderr)
+	}
+	if want := "model calls by source: mod-summary=1 mod:followups=2\n"; !strings.Contains(r.stdout, want) {
+		t.Errorf("stats = %q, want it to hold %q", r.stdout, want)
+	}
+}

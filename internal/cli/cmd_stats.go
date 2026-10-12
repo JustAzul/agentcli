@@ -80,11 +80,25 @@ func printStatsSummary(ctx *Context, stats *telemetry.Obj, skipped telemetry.Ski
 			fmt.Fprintf(ctx.Stdout, "tokens %s: %s (%v runs)\n", p.Key, tokenCounts(u), u.Get("runs_with_usage"))
 		}
 	}
+	printModelCalls(ctx, stats)
 	printCosts(ctx, stats, totals, byModel)
 	if n := skipped.Total(); n > 0 {
 		fmt.Fprintf(ctx.Stdout, "skipped lines: %d (unknown_kind=%d unknown_version=%d unparseable=%d)\n",
 			n, skipped.UnknownKind, skipped.UnknownVersion, skipped.Unparseable)
 	}
+}
+
+// printModelCalls writes how many model calls each source made, when any did.
+func printModelCalls(ctx *Context, stats *telemetry.Obj) {
+	bySource, _ := stats.Get("model_calls_by_source").(*telemetry.Obj)
+	if bySource == nil || len(bySource.Pairs()) == 0 {
+		return
+	}
+	calls := &telemetry.Obj{}
+	for _, p := range bySource.Pairs() {
+		calls.Set(p.Key, p.Value.(*telemetry.Obj).Get("calls"))
+	}
+	fmt.Fprintf(ctx.Stdout, "model calls by source: %s\n", countsLine(calls))
 }
 
 // printCosts writes the session cost, then the cost of each priced model. A

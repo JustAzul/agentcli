@@ -283,6 +283,7 @@ func ComputeStatsWithModelCalls(runs, modelCalls []map[string]any, skipped Skipp
 	unpriced, missing := priceGaps(everything, cache)
 	out.Set("usage_by_model", usageByModel(everything, cache))
 	out.Set("usage_by_provider", usageByProvider(everything, cache))
+	out.Set("model_calls_by_source", modelCallsBySource(calls, cache))
 	out.Set("skipped", skipped)
 	out.Set("unpriced_models", unpriced)
 	out.Set("missing_prices", missing)
@@ -475,6 +476,31 @@ func usageByProvider(entries []entry, cache *prices.Cache) *Obj {
 		unpriced, _ := priceGaps(byProvider[name], cache)
 		totals.Set("cost_complete", len(unpriced) == 0)
 		out.Set(name, totals)
+	}
+	return out
+}
+
+// modelCallsBySource counts the model calls of each source, with their tokens
+// and the cost of those the cache prices (null when none is), the sources in
+// name order. The calls are already one per call id: the fold keeps the first of
+// several records of one.
+func modelCallsBySource(calls []entry, cache *prices.Cache) *Obj {
+	bySource := map[string][]entry{}
+	for _, c := range calls {
+		bySource[c.source] = append(bySource[c.source], c)
+	}
+	names := make([]string, 0, len(bySource))
+	for name := range bySource {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	out := &Obj{}
+	for _, name := range names {
+		totals := usageTotals(bySource[name], cache)
+		out.Set(name, obj("calls", int64(len(bySource[name])),
+			"input_tokens", totals.Get("input_tokens"), "cached_input_tokens", totals.Get("cached_input_tokens"),
+			"cache_write_input_tokens", totals.Get("cache_write_input_tokens"), "output_tokens", totals.Get("output_tokens"),
+			"cost_usd", totals.Get("cost_usd")))
 	}
 	return out
 }
