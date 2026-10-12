@@ -8,7 +8,10 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"regexp"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/JustAzul/agentcli/internal/provider"
 	"github.com/JustAzul/agentcli/internal/store"
@@ -19,7 +22,64 @@ func init() {
 	register(Command{Name: "usage", Summary: "usage add records the token usage of a model call", Run: runUsage})
 }
 
-const usageAddLine = "usage: agentcli usage add --session-id <id> --provider anthropic --model <model> --source <source> [--run-id <run_id>] [--json]"
+const usageAddLine = "usage: agentcli usage add --session-id <id> --provider anthropic --model <model> --source <source> [--run-id <run_id>] [--call-id <id>] [--attr <key>=<value>]... [--ts <RFC 3339>] [--json]"
+
+// What a call id, an attr and an attr count may be: the record of a call is
+// read back by whatever made it, so each is held to a shape it can rely on.
+const (
+	maxAttrs          = 32
+	maxAttrValueChars = 200
+)
+
+var (
+	callIDPattern  = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9:._-]{0,199}$`)
+	attrKeyPattern = regexp.MustCompile(`^[a-z_]{1,32}$`)
+)
+
+// callAttrs collects the repeated --attr key=value flags.
+type callAttrs map[string]string
+
+func (a *callAttrs) String() string { return fmt.Sprint(map[string]string(*a)) }
+
+func (a *callAttrs) Set(raw string) error {
+	key, value, found := strings.Cut(raw, "=")
+	switch {
+	case !found:
+		return fmt.Errorf("%q is not key=value", raw)
+	case !attrKeyPattern.MatchString(key):
+		return fmt.Errorf("attr key %q must match %s", key, attrKeyPattern)
+	case utf8.RuneCountInString(value) > maxAttrValueChars:
+		return fmt.Errorf("attr %s: the value is longer than %d characters", key, maxAttrValueChars)
+	}
+	if _, repeated := (*a)[key]; repeated {
+		return fmt.Errorf("attr %s is given twice", key)
+	}
+	if len(*a) == maxAttrs {
+		return fmt.Errorf("at most %d attrs are taken", maxAttrs)
+	}
+	if *a == nil {
+		*a = callAttrs{}
+	}
+	(*a)[key] = value
+	return nil
+}
+
+// callTime is an RFC 3339 instant.
+type callTime struct {
+	at      time.Time
+	isGiven bool
+}
+
+func (f *callTime) String() string { return f.at.Format(time.RFC3339) }
+
+func (f *callTime) Set(raw string) error {
+	at, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		return fmt.Errorf("%q is not an RFC 3339 time", raw)
+	}
+	f.at, f.isGiven = at.UTC().Truncate(time.Second), true
+	return nil
+}
 
 // modelCallProviders maps each provider a model call can be recorded for to
 // the price-list namespace (litellm_provider) its models are priced under.
@@ -37,8 +97,10 @@ func runUsage(ctx *Context, args []string) int {
 
 // usageAddFlags is what `usage add` was asked to record.
 type usageAddFlags struct {
-	sessionID, provider, model, source, runID string
-	runIDGiven, asJSON                        bool
+	sessionID, provider, model, source, runID, callID string
+	runIDGiven, callIDGiven, asJSON                   bool
+	attrs                                             callAttrs
+	ts                                                callTime
 }
 
 // parseUsageAddFlags reads the flags of `usage add` and the arguments left
@@ -52,9 +114,15 @@ func parseUsageAddFlags(args []string) (usageAddFlags, []string, error) {
 	fset.StringVar(&f.model, "model", "", "the model called")
 	fset.StringVar(&f.source, "source", "", "what made the call")
 	fset.StringVar(&f.runID, "run-id", "", "the run the call was about")
+	fset.StringVar(&f.callID, "call-id", "", "the call's own id; a call recorded twice under one id counts once")
+	fset.Var(&f.attrs, "attr", "key=value recorded with the call; repeatable")
+	fset.Var(&f.ts, "ts", "when the call was made, as an RFC 3339 time (default: now)")
 	fset.BoolVar(&f.asJSON, "json", false, "print one JSON object")
 	positional, err := parseInterspersed(fset, args)
-	fset.Visit(func(given *flag.Flag) { f.runIDGiven = f.runIDGiven || given.Name == "run-id" })
+	fset.Visit(func(given *flag.Flag) {
+		f.runIDGiven = f.runIDGiven || given.Name == "run-id"
+		f.callIDGiven = f.callIDGiven || given.Name == "call-id"
+	})
 	return f, positional, err
 }
 
@@ -70,6 +138,8 @@ func (f usageAddFlags) problem(positional []string) string {
 		return "usage add needs a non-empty --model"
 	case f.source == "":
 		return "usage add needs a non-empty --source"
+	case f.callIDGiven && !callIDPattern.MatchString(f.callID):
+		return fmt.Sprintf("--call-id must match %s, got %q", callIDPattern, f.callID)
 	}
 	if _, ok := modelCallProviders[f.provider]; !ok {
 		return fmt.Sprintf("--provider must be anthropic, got %q", f.provider)
@@ -77,15 +147,31 @@ func (f usageAddFlags) problem(positional []string) string {
 	return ""
 }
 
-// modelCall is the record of one call with usage, recorded at now. An absent
-// --run-id records null.
+// calledAt is when the call was made: --ts, else now.
+func (f usageAddFlags) calledAt(now time.Time) time.Time {
+	if f.ts.isGiven {
+		return f.ts.at
+	}
+	return now
+}
+
+// modelCall is the record of one call with usage made at calledAt. An absent
+// --run-id records null, an absent --call-id a new id, and attrs are recorded
+// only when there are some.
 func (f usageAddFlags) modelCall(usage provider.Usage, now time.Time) telemetry.ModelCall {
+	calledAt := f.calledAt(now)
 	call := telemetry.ModelCall{
-		CallID: store.NewCallID(now), TS: now.Format(time.RFC3339), SessionID: f.sessionID,
+		CallID: store.NewCallID(now), TS: calledAt.Format(time.RFC3339), SessionID: f.sessionID,
 		Provider: f.provider, Model: f.model, Source: f.source, Usage: usage,
+	}
+	if f.callIDGiven {
+		call.CallID = f.callID
 	}
 	if f.runIDGiven {
 		call.RunID = &f.runID
+	}
+	if len(f.attrs) > 0 {
+		call.Attrs = f.attrs
 	}
 	return call
 }
@@ -127,7 +213,9 @@ func runUsageAdd(ctx *Context, args []string) int {
 	}
 	now := ctx.Now().UTC().Truncate(time.Second)
 	call := f.modelCall(usage, now)
-	if err := telemetry.AppendModelCall(home, call, now, telemetry.Options{}); err != nil {
+	// The record goes in the month file of the call's time, so a call recorded
+	// twice across a month's end still lands twice in one file.
+	if err := telemetry.AppendModelCall(home, call, f.calledAt(now), telemetry.Options{}); err != nil {
 		return ctx.Fail(ExitInternal, "writing the model call: %v", err)
 	}
 	return report(ctx, call.CallID)

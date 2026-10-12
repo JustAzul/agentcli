@@ -226,3 +226,137 @@ func TestRunsAndStatsIgnoreModelCalls(t *testing.T) {
 		t.Errorf("stats changed: %v vs %v", j, statsBefore)
 	}
 }
+
+// attrKey is the i-th distinct key of letters and underscores, as a key may be.
+func attrKey(i int) string {
+	return "k_" + string(rune('a'+i/26)) + string(rune('a'+i%26))
+}
+
+func TestUsageAddRecordsTheCallIDItIsGiven(t *testing.T) {
+	for _, id := range []string{"followups:chk-1:e1:v0plus", "a", strings.Repeat("x", 200), "poc.s1_a-b"} {
+		s := newSandbox(t)
+		s.stdin = anthropicUsage
+		r := s.run(usageAddArgs("--call-id", id, "--json")...)
+		if r.code != 0 {
+			t.Fatalf("%q: exit %d: %s", id, r.code, r.stderr)
+		}
+		calls := modelCalls(t, s.home)
+		if len(calls) != 1 || calls[0]["call_id"] != id || r.json(t)["call_id"] != id {
+			t.Errorf("%q: calls = %v, json = %v", id, calls, r.stdout)
+		}
+	}
+}
+
+func TestUsageAddRejectsABadCallIDBeforeWriting(t *testing.T) {
+	for _, id := range []string{"", "has space", "-leading", ":leading", "a/b", "tab\tid", strings.Repeat("x", 201), "é"} {
+		s := newSandbox(t)
+		s.stdin = anthropicUsage
+		if r := s.run(usageAddArgs("--call-id", id)...); r.code != 2 {
+			t.Errorf("%q: exit %d, want 2 (stderr %q)", id, r.code, r.stderr)
+		}
+		if len(telemetryRecords(t, s.home)) != 0 {
+			t.Errorf("%q: wrote a record", id)
+		}
+	}
+}
+
+func TestUsageAddRecordsEveryAttrInKeyOrderAfterTheUsage(t *testing.T) {
+	s := newSandbox(t)
+	s.stdin = `{"input_tokens":458,"output_tokens":18}`
+	args := usageAddArgs("--attr", "stage=v0plus", "--attr", "check_id=chk-1", "--attr", "note=a=b c", "--attr", "empty=")
+	if r := s.run(args...); r.code != 0 {
+		t.Fatalf("exit %d: %s", r.code, r.stderr)
+	}
+	line := strings.TrimSuffix(readFile(t, currentMonthFile(s.home)), "\n")
+	want := `"reasoning_output_tokens":0},"attrs":{"check_id":"chk-1","empty":"","note":"a=b c","stage":"v0plus"}}`
+	if !strings.HasSuffix(line, want) {
+		t.Errorf("line = %s\nwant it to end with %s", line, want)
+	}
+}
+
+func TestUsageAddRejectsBadAttrsBeforeWriting(t *testing.T) {
+	many := []string{}
+	for i := 0; i < 33; i++ {
+		many = append(many, "--attr", attrKey(i)+"=v")
+	}
+	cases := map[string][]string{
+		"no equals":     {"--attr", "stage"},
+		"empty key":     {"--attr", "=v"},
+		"digit in key":  {"--attr", "a9=v"},
+		"camel case":    {"--attr", "checkId=v"},
+		"dash in key":   {"--attr", "a-b=v"},
+		"long key":      {"--attr", strings.Repeat("k", 33) + "=v"},
+		"long value":    {"--attr", "k=" + strings.Repeat("v", 201)},
+		"repeated key":  {"--attr", "k=1", "--attr", "k=2"},
+		"too many":      many,
+		"no value flag": {"--attr"},
+	}
+	for name, extra := range cases {
+		s := newSandbox(t)
+		s.stdin = anthropicUsage
+		if r := s.run(usageAddArgs(extra...)...); r.code != 2 {
+			t.Errorf("%s: exit %d, want 2 (stderr %q)", name, r.code, r.stderr)
+		}
+		if len(telemetryRecords(t, s.home)) != 0 {
+			t.Errorf("%s: wrote a record", name)
+		}
+	}
+}
+
+func TestUsageAddAcceptsTheLimitsOfAnAttr(t *testing.T) {
+	s := newSandbox(t)
+	s.stdin = anthropicUsage
+	extra := []string{"--attr", strings.Repeat("k", 32) + "=" + strings.Repeat("v", 200)}
+	for i := 0; i < 31; i++ {
+		extra = append(extra, "--attr", attrKey(i)+"=v")
+	}
+	if r := s.run(usageAddArgs(extra...)...); r.code != 0 {
+		t.Fatalf("exit %d: %s", r.code, r.stderr)
+	}
+	attrs, _ := modelCalls(t, s.home)[0]["attrs"].(map[string]any)
+	if len(attrs) != 32 {
+		t.Errorf("attrs = %d keys, want 32", len(attrs))
+	}
+}
+
+func TestUsageAddRecordsTheTimeOfTheCallInTheMonthOfThatTime(t *testing.T) {
+	s := newSandbox(t)
+	s.stdin = anthropicUsage
+	// A call made in September by the clock of its zone, but October in UTC, recorded later.
+	r := s.run(usageAddArgs("--ts", "2026-09-30T21:00:00-03:00")...)
+	if r.code != 0 {
+		t.Fatalf("exit %d: %s", r.code, r.stderr)
+	}
+	records := telemetryRecords(t, s.home)
+	if len(records) != 1 || records[0]["ts"] != "2026-10-01T00:00:00Z" {
+		t.Fatalf("records = %v", records)
+	}
+	if !exists(filepath.Join(telemetryDir(s.home), "2026-10.jsonl")) {
+		files, _ := filepath.Glob(filepath.Join(telemetryDir(s.home), "*"))
+		t.Errorf("the record is not in the month of its ts: %v", files)
+	}
+}
+
+func TestUsageAddDropsTheFractionOfASecondOfTheTime(t *testing.T) {
+	s := newSandbox(t)
+	s.stdin = anthropicUsage
+	if r := s.run(usageAddArgs("--ts", "2026-10-12T17:25:54.987Z")...); r.code != 0 {
+		t.Fatalf("exit %d: %s", r.code, r.stderr)
+	}
+	if got := modelCalls(t, s.home)[0]["ts"]; got != "2026-10-12T17:25:54Z" {
+		t.Errorf("ts = %v", got)
+	}
+}
+
+func TestUsageAddRejectsABadTimeBeforeWriting(t *testing.T) {
+	for _, ts := range []string{"", "yesterday", "2026-10-12", "2026-10-12T17:25:54", "1760289954"} {
+		s := newSandbox(t)
+		s.stdin = anthropicUsage
+		if r := s.run(usageAddArgs("--ts", ts)...); r.code != 2 {
+			t.Errorf("%q: exit %d, want 2 (stderr %q)", ts, r.code, r.stderr)
+		}
+		if len(telemetryRecords(t, s.home)) != 0 {
+			t.Errorf("%q: wrote a record", ts)
+		}
+	}
+}

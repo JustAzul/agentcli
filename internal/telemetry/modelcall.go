@@ -21,6 +21,9 @@ type ModelCall struct {
 	Source    string         `json:"source"`
 	RunID     *string        `json:"run_id"`
 	Usage     provider.Usage `json:"usage"`
+	// Attrs is what the caller said about the call. A reader that does not
+	// know the field passes over it; without any the line has no such key.
+	Attrs map[string]string `json:"attrs,omitempty"`
 }
 
 // AppendModelCall writes call as a model_call record to the month file of
