@@ -164,3 +164,141 @@ test('the hidden run type stays refused when the engine is missing or too old', 
 
   expect(await offer($, RUN_TYPE)).toEqual({ isOffered: false })
 })
+
+const RUN_A = { run_id: 'run-a', purpose: 'second-opinion', source: 'cli', started_at: '2026-10-16T10:00:00Z' }
+const RUN_B = { run_id: 'run-b', purpose: 'code-review', source: 'mcp', started_at: '2026-10-16T10:00:01Z' }
+const TICK = 5000
+
+test('every 5 seconds the plugin opens one hidden run row per flagged run, with the run id as prompt and purpose and source as description', async ($, on) => {
+  const w = world(on, present('1.1.0'))
+  w.flaggedRuns = async () => [RUN_A, RUN_B]
+  await $.session.start(START)
+
+  await w.clock.advance(TICK - 1)
+  expect(w.spawns).toEqual([])
+  await w.clock.advance(1)
+  expect(w.spawns).toEqual([
+    { subagentType: RUN_TYPE, prompt: 'msgate run run-a', description: 'second-opinion · cli' },
+    { subagentType: RUN_TYPE, prompt: 'msgate run run-b', description: 'code-review · mcp' },
+  ])
+})
+
+test('a run that already has a row is not opened again, while a run that shows up later is', async ($, on) => {
+  const w = world(on, present('1.1.0'))
+  w.flaggedRuns = async () => [RUN_A]
+  await $.session.start(START)
+  await w.clock.advance(TICK * 3)
+  expect(w.spawns.map((s) => s.prompt)).toEqual(['msgate run run-a'])
+
+  w.flaggedRuns = async () => [RUN_A, RUN_B]
+  await w.clock.advance(TICK)
+  expect(w.spawns.map((s) => s.prompt)).toEqual(['msgate run run-a', 'msgate run run-b'])
+})
+
+const logsAbout = (w: any, runId: string) => w.debugLogs.filter((line: string) => line.includes(runId))
+
+test('a refused spawn writes one log line for its run, is not tried again, and keeps the other runs from being opened', async ($, on) => {
+  const w = world(on, present('1.1.0'))
+  w.flaggedRuns = async () => [RUN_A, RUN_B]
+  w.spawnAnswer = (args) => (args.prompt.endsWith('run-a') ? { deny: 'msgate: a hidden row does not open in the auto permission mode' } : { model: 'haiku', agentId: 'row-b' })
+  await $.session.start(START)
+  await w.clock.advance(TICK * 3)
+
+  expect(w.spawns.map((s) => s.prompt)).toEqual(['msgate run run-a', 'msgate run run-b'])
+  expect(logsAbout(w, 'run-a')).toHaveLength(1)
+  expect(logsAbout(w, 'run-a')[0]).toContain('auto permission mode')
+  expect(logsAbout(w, 'run-b')).toEqual([])
+})
+
+test('a spawn that throws writes one log line for its run and is not tried again', async ($, on) => {
+  const w = world(on, present('1.1.0'))
+  w.flaggedRuns = async () => [RUN_A, RUN_B]
+  w.spawnAnswer = (args) => {
+    if (args.prompt.endsWith('run-a')) throw new Error('spawn exploded')
+    return { model: 'haiku', agentId: 'row-b' }
+  }
+  await $.session.start(START)
+  await w.clock.advance(TICK * 3)
+
+  expect(w.spawns.map((s) => s.prompt)).toEqual(['msgate run run-a', 'msgate run run-b'])
+  expect(logsAbout(w, 'run-a')).toHaveLength(1)
+  expect(logsAbout(w, 'run-b')).toEqual([])
+})
+
+test('a poll that is still running when the next period comes is not joined by another', async ($, on) => {
+  const w = world(on, present('1.1.0'))
+  let release: () => void = () => {}
+  w.flaggedRuns = () => new Promise((resolve) => {
+    release = () => resolve([RUN_A])
+  })
+  await $.session.start(START)
+
+  await w.clock.advance(TICK * 3)
+  expect(w.flaggedCalls).toBe(1)
+
+  release()
+  await w.clock.settle()
+  expect(w.spawns).toHaveLength(1)
+  await w.clock.advance(TICK)
+  expect(w.flaggedCalls).toBe(2)
+})
+
+test('a failed listing is logged once while it keeps failing, and the next period asks again', async ($, on) => {
+  const w = world(on, present('1.1.0'))
+  w.flaggedRuns = async () => {
+    throw new Error('msgate:flaggedRuns:failed')
+  }
+  await $.session.start(START)
+  await w.clock.advance(TICK * 3)
+
+  expect(w.flaggedCalls).toBe(3)
+  expect(w.debugLogs.filter((line) => line.includes('msgate:flaggedRuns:failed'))).toHaveLength(1)
+
+  w.flaggedRuns = async () => [RUN_A]
+  await w.clock.advance(TICK)
+  expect(w.spawns).toHaveLength(1)
+})
+
+test('when the engine refuses to back the run type there is no timer', async ($, on) => {
+  const w = world(on, present('1.1.0', ['run']))
+  await $.session.start(START)
+  await w.clock.advance(TICK * 3)
+
+  expect(w.flaggedCalls).toBe(0)
+  expect(runRegistered(w)).toEqual([])
+  expect(w.debugLogs.filter((line) => line.includes('run') && line.includes('msgate:backType:model'))).toHaveLength(1)
+})
+
+test('a second session start leaves a single timer', async ($, on) => {
+  const w = world(on, present('1.1.0'))
+  await $.session.start(START)
+  await $.session.start(START)
+  await w.clock.advance(TICK)
+
+  expect(w.flaggedCalls).toBe(1)
+})
+
+test('an engine that falls back to 1.0.x on reload leaves no timer', async ($, on) => {
+  let version = '1.1.0'
+  const w = world(on, present(async () => version))
+  await $.session.start(START)
+  version = '1.0.0'
+  await $.session.start(START)
+  await w.clock.advance(TICK)
+
+  expect(w.flaggedCalls).toBe(0)
+})
+
+test('a reload that finds the engine gone leaves no timer', async ($, on) => {
+  let isUp = true
+  const w = world(on, present(async () => {
+    if (!isUp) throw new Error('msgate:version:unserved')
+    return '1.1.0'
+  }))
+  await $.session.start(START)
+  isUp = false
+  await $.session.start(START)
+  await w.clock.advance(TICK)
+
+  expect(w.flaggedCalls).toBe(0)
+})

@@ -70,7 +70,8 @@ export function world(on: any, engine: Engine = present()) {
     return { value: { agent: 'msgate-agents:' + e.name } }
   })
   on('agent.spawn', (_$: any, e: any) => {
-    w.spawns.push({ subagentType: e.subagentType, prompt: e.prompt, description: e.description })
+    // The kit's bottom sees the call as the Agent tool takes it.
+    w.spawns.push({ subagentType: e.subagent_type, prompt: e.prompt, description: e.description })
     return w.spawnAnswer(w.spawns[w.spawns.length - 1])
   })
   on('agent.offer', () => ({ isOffered: true }))

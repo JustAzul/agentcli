@@ -1,7 +1,7 @@
 // The msgate-agents plugin's contract: the values it keeps in the session's
-// $.state. The engine interface it calls, `$.msgate` (`version()` and
-// `backType()`), is added by the msgate engine plugin, not by this one, and is
-// undefined when that plugin is not installed.
+// $.state. The engine interface it calls, `$.msgate` (`version()`, `backType()`
+// and, from engine 1.1, `flaggedRuns()`), is added by the msgate engine plugin,
+// not by this one, and is undefined when that plugin is not installed.
 
 declare module 'claude-code' {
   interface PluginState {

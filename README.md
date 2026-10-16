@@ -27,6 +27,7 @@ into two plugins.
 - [Install](#install)
 - [The six agents](#the-six-agents)
 - [When the engine is missing](#when-the-engine-is-missing)
+- [The hidden run row](#the-hidden-run-row)
 - [The dispatch skill](#the-dispatch-skill)
 - [State after the rename](#state-after-the-rename)
 - [Working on the plugin](#working-on-the-plugin)
@@ -91,6 +92,25 @@ notice, `msgate-agents needs the msgate engine plugin 1.x` (followed by the
 version found, if any), and none of the six types is offered. When the engine
 refuses the profile of one type, that type alone is hidden and the refusal goes
 to the debug log.
+
+## The hidden run row
+
+With a msgate engine from 1.1 on, the plugin also registers a seventh type,
+`msgate-agents:run`. It is not one of the six agents and Claude never picks it:
+it is offered to no model, whether or not the dispatch skill has loaded. It
+exists only so that a run started outside an agent (from the command line, say)
+and flagged for agent feedback can show as a row in the agent list. The engine
+answers that row with the run's progress and its outcome.
+
+Every 5 seconds the plugin asks the engine for the flagged runs that have no row
+yet and opens one row per run, with the prompt `msgate run <run_id>` and the
+description `<purpose> · <source>`. A run is tried once per session: when the
+engine refuses the row (it does not open one in the auto permission mode) or the
+call fails, the reason goes to the debug log, one line for that run, and the run
+is not tried again. A run with no row keeps showing in the band above the prompt.
+
+With an engine at 1.0.x the type is not registered, the plugin starts no timer
+and the band alone shows the runs.
 
 ## The dispatch skill
 

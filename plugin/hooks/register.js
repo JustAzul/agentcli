@@ -1,5 +1,5 @@
 import { DISPATCH_SKILL, agentSpecs, agentTypeNames, backArgs, isRunType, typeOf } from './agents.js'
-import { openRunRows } from './rows.js'
+import { startRunRows, stopRunRows } from './rows.js'
 
 // Set once the dispatch skill has loaded in this session; the agent types are
 // offered to the model only then. Session state is never shared with another
@@ -78,9 +78,10 @@ export function register(on) {
     const found = await engineVersion($)
     if (found.problem === undefined) {
       await $.state.set(BACKED_TYPES, await backTypes($))
-      await openRunRows($, found.version)
+      await startRunRows($, found.version)
     } else {
       await $.state.set(BACKED_TYPES, [])
+      stopRunRows()
       await noteMissingEngine($, found)
     }
     return next(e)
