@@ -12,6 +12,10 @@ export type Engine = { kind: 'absent' } | { kind: 'present'; version: string | (
 export const present = (version = '1.0.0', refuse: string[] = []): Engine => ({ kind: 'present', version, refuse })
 export const absent: Engine = { kind: 'absent' }
 
+export type FlaggedRun = { run_id: string; purpose: string; source: string; started_at: string }
+export type SpawnArgs = { subagentType: string; prompt: string; description: string }
+
+export const RUN_TYPE = 'msgate-agents:run'
 export const TYPES = ['adhoc', 'code-review', 'cross-check', 'delegation', 'expert-persona', 'second-opinion']
 export const START = { surface: 'terminal', isInteractive: true, cwd: '/work' } as const
 export const HANDOFF_FAILED = 'msgate: the hand-off to the agent failed, so this is not its answer.'
@@ -26,6 +30,11 @@ export function world(on: any, engine: Engine = present()) {
     backCalls: [] as BackCall[],
     versionCalls: 0,
     skillTexts: [] as string[],
+    // The runs the engine reports as flagged, and what each spawn answers; a test sets them.
+    flaggedCalls: 0,
+    flaggedRuns: (async () => []) as () => Promise<FlaggedRun[]>,
+    spawns: [] as SpawnArgs[],
+    spawnAnswer: ((_args: SpawnArgs) => ({ model: 'haiku', agentId: 'row' })) as (args: SpawnArgs) => any,
   }
   on('session.start', () => ({ cwd: '/work' }))
   if (engine.kind === 'present') {
@@ -35,6 +44,10 @@ export function world(on: any, engine: Engine = present()) {
         version: async () => {
           w.versionCalls += 1
           return typeof engine.version === 'function' ? engine.version() : engine.version
+        },
+        flaggedRuns: async () => {
+          w.flaggedCalls += 1
+          return w.flaggedRuns()
         },
         backType: async (args: BackCall) => {
           w.backCalls.push(args)
@@ -55,6 +68,10 @@ export function world(on: any, engine: Engine = present()) {
   on('agent.register', (_$: any, e: any) => {
     w.agentTypes.push(e)
     return { value: { agent: 'msgate-agents:' + e.name } }
+  })
+  on('agent.spawn', (_$: any, e: any) => {
+    w.spawns.push({ subagentType: e.subagentType, prompt: e.prompt, description: e.description })
+    return w.spawnAnswer(w.spawns[w.spawns.length - 1])
   })
   on('agent.offer', () => ({ isOffered: true }))
   on('skill.prompt', (_$: any, e: any) => ({ text: e.text }))

@@ -74,6 +74,41 @@ export function backArgs(name) {
   return { type: name, ...TYPES[name].profile }
 }
 
+// The hidden type that stands for a run in the agent list. It is offered to no
+// model and is not one of the six: the engine answers its rows, so its
+// definition is a placeholder that is never run.
+export const RUN_TYPE = 'run'
+export const RUN_PROFILE = { command: 'follow', promptMode: 'run-id' }
+
+// The first engine minor that answers a `follow` row and lists flagged runs.
+const RUN_ENGINE_MINOR = 1
+
+// hasRunRows tells whether an engine of this version can serve the hidden type.
+export function hasRunRows(version) {
+  const [major, minor] = String(version).split('.').map(Number)
+  return major === 1 && minor >= RUN_ENGINE_MINOR
+}
+
+export function runSpec() {
+  return {
+    name: RUN_TYPE,
+    description: 'A row for a run in flight. Offered to no model.',
+    prompt: 'This row is answered by the msgate engine. Reply with nothing.',
+    model: 'haiku',
+    tools: [],
+    omitClaudeMd: true,
+  }
+}
+
+export function runBackArgs() {
+  return { type: RUN_TYPE, ...RUN_PROFILE }
+}
+
+// isRunType tells whether a full type ("<plugin>:<name>") is this plugin's hidden one.
+export function isRunType(pluginName, fullType) {
+  return fullType === pluginName + ':' + RUN_TYPE
+}
+
 // typeOf returns the type name for a full type ("<plugin>:<name>") this plugin
 // registered, or null.
 export function typeOf(pluginName, fullType) {

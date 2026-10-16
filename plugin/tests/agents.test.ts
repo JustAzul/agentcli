@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { HANDOFF_FAILED, START, TYPES, absent, present, world } from './kit'
+import { HANDOFF_FAILED, RUN_TYPE, START, TYPES, absent, present, world } from './kit'
 
 test('session start registers the six agent types and backs each with its profile', async ($, on) => {
   const w = world(on)
@@ -109,4 +109,58 @@ test('every session start backs the six types again, and the dispatch gate survi
   expect(w.backCalls).toHaveLength(12)
   expect(w.backCalls.slice(6).map((call) => call.type).sort()).toEqual([...TYPES].sort())
   expect(await offer($, 'msgate-agents:adhoc')).toEqual({ isOffered: true })
+})
+
+const runRegistered = (w: any) => w.agentTypes.filter((t: any) => t.name === 'run')
+const runBacked = (w: any) => w.backCalls.filter((c: any) => c.type === 'run')
+
+test('an engine from 1.1 on gets the hidden run type, registered with no tools and backed to follow a run id', async ($, on) => {
+  const w = world(on, present('1.1.0'))
+  await $.session.start(START)
+
+  expect(runRegistered(w)).toHaveLength(1)
+  expect(runRegistered(w)[0].tools).toEqual([])
+  expect(runBacked(w)).toEqual([{ type: 'run', command: 'follow', promptMode: 'run-id' }])
+  // The six dispatchable types are untouched by it.
+  expect(w.backCalls.filter((c: any) => c.type !== 'run')).toHaveLength(6)
+})
+
+test('a later minor or patch of 1.x keeps the hidden run type', async ($, on) => {
+  const w = world(on, present('1.12.3'))
+  await $.session.start(START)
+
+  expect(runRegistered(w)).toHaveLength(1)
+  expect(runBacked(w)).toHaveLength(1)
+})
+
+test('an engine at 1.0.x gets no hidden run type and no timer, and the six types stay as they were', async ($, on) => {
+  const w = world(on, present('1.0.9'))
+  w.flaggedRuns = async () => [{ run_id: 'r1', purpose: 'second-opinion', source: 'cli', started_at: '' }]
+  await $.session.start(START)
+  await w.clock.advance(20000)
+
+  expect(runRegistered(w)).toEqual([])
+  expect(runBacked(w)).toEqual([])
+  expect(w.backCalls).toHaveLength(6)
+  expect(w.flaggedCalls).toBe(0)
+  expect(w.spawns).toEqual([])
+})
+
+test('the hidden run type is offered to no model, with the dispatch skill loaded or not', async ($, on) => {
+  world(on, present('1.1.0'))
+  await $.session.start(START)
+
+  expect(await offer($, RUN_TYPE)).toEqual({ isOffered: false })
+  await loadDispatch($)
+  expect(await offer($, RUN_TYPE)).toEqual({ isOffered: false })
+  // The dispatchable types it sits beside are still offered.
+  expect(await offer($, 'msgate-agents:adhoc')).toEqual({ isOffered: true })
+})
+
+test('the hidden run type stays refused when the engine is missing or too old', async ($, on) => {
+  world(on, absent)
+  await $.session.start(START)
+  await loadDispatch($)
+
+  expect(await offer($, RUN_TYPE)).toEqual({ isOffered: false })
 })

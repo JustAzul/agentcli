@@ -1,4 +1,5 @@
-import { DISPATCH_SKILL, agentSpecs, agentTypeNames, backArgs, typeOf } from './agents.js'
+import { DISPATCH_SKILL, agentSpecs, agentTypeNames, backArgs, isRunType, typeOf } from './agents.js'
+import { openRunRows } from './rows.js'
 
 // Set once the dispatch skill has loaded in this session; the agent types are
 // offered to the model only then. Session state is never shared with another
@@ -67,12 +68,17 @@ async function isOffered($, type) {
   return Array.isArray(backed) && backed.includes(type)
 }
 
+function isOurs(pluginName, agent) {
+  return isRunType(pluginName, agent) || typeOf(pluginName, agent) !== null
+}
+
 export function register(on) {
   on('session.start', async ($, e, next) => {
     await registerAgentTypes($)
     const found = await engineVersion($)
     if (found.problem === undefined) {
       await $.state.set(BACKED_TYPES, await backTypes($))
+      await openRunRows($, found.version)
     } else {
       await $.state.set(BACKED_TYPES, [])
       await noteMissingEngine($, found)
@@ -86,8 +92,9 @@ export function register(on) {
   })
 
   on('agent.offer', async ($, e, next) => {
+    if (isRunType($.plugin.name, e.agent)) return { isOffered: false }
     const type = typeOf($.plugin.name, e.agent)
     if (type === null) return next(e)
     return (await isOffered($, type)) ? next(e) : { isOffered: false }
-  }).catch(($, e, next) => (next.called || typeOf($.plugin.name, e.agent) === null ? next(e) : { isOffered: false }))
+  }).catch(($, e, next) => (next.called || !isOurs($.plugin.name, e.agent) ? next(e) : { isOffered: false }))
 }
