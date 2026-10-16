@@ -321,7 +321,9 @@ background agent:
 - while its turn runs, the mod sets its spinner's message to the newest
   summary, or to `agentcli · <type>` until there is one, unless Claude Code has
   already set a message of its own there;
-- the native completion notification carries the output;
+- its report carries the output: handed back through Claude Code's
+  `SubagentHandback` in the auto permission mode, where only a hand-back
+  reaches Claude, and as the agent's final text in the other modes;
 - a SendMessage to the agent sends the next turn of the same conversation;
 - stopping the agent cancels its run.
 
