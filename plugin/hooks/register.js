@@ -180,6 +180,7 @@ let conversationWrites = Promise.resolve()
 export function register(on, options) {
   summaries = createSummarizer(options ?? {})
   pendingRecordings.length = 0
+  answeredTurns.clear()
   isLossToastShown = false
   service = createService()
   // Only the spread and the noun: a step that fails unloads the whole plugin.
@@ -257,17 +258,23 @@ export function register(on, options) {
   on('turn.step', async function* ($, e, next) {
     const type = await subagentTypeOf($, e.agentId)
     if (type === null) return yield* next(e)
+    // A later step of a turn that has answered (the tool is missing in the
+    // default permission mode, or the request repeats) needs no new run.
+    const answered = answeredText(e)
+    if (answered !== null) return yield* answer(e, answered)
     yield thinking('agentcli · ' + type)
-    return yield* answer(e, yield* followTurn($, e.agentId, type, next.signal))
+    return yield* deliver(e, yield* followTurn($, e.agentId, type, next.signal))
   }).catch(async function* ($, e, next) {
     if (next.called || !isKnownSubagent(e.agentId)) return yield* next(e)
-    return yield* answer(e, handoffFailure('the plugin hook failed: ' + failureOf(next.error)))
+    return yield* deliver(e, handoffFailure('the plugin hook failed: ' + failureOf(next.error)))
   })
 
+  // The hand-back call is the one tool they may make: it is how their answer
+  // reaches the caller.
   on('tool.call', async ($, e, next) => {
-    if ((await subagentTypeOf($, e.agentId)) === null) return next(e)
+    if (e.tool === HANDBACK_TOOL || (await subagentTypeOf($, e.agentId)) === null) return next(e)
     return { deny: NO_TOOLS }
-  }).catch(($, e, next) => (next.called || !isKnownSubagent(e.agentId) ? next(e) : { deny: NO_TOOLS }))
+  }).catch(($, e, next) => (next.called || e.tool === HANDBACK_TOOL || !isKnownSubagent(e.agentId) ? next(e) : { deny: NO_TOOLS }))
 
   // The spinner of an agentcli agent's turn says what its run is doing.
   on('ui.render', { component: 'Spinner' }, async ($, e, next) => {
@@ -939,6 +946,40 @@ function isKnownSubagent(agentId) {
 
 function thinking(line) {
   return { kind: 'thinking', index: THINKING_BLOCK, text: line + '\n' }
+}
+
+// The tool that delivers a subagent's final report to its caller. In the auto
+// permission mode plain text is not delivered, and the call ends the subagent.
+const HANDBACK_TOOL = 'SubagentHandback'
+
+// deliver remembers the text a turn answered with, then hands it back.
+async function* deliver(e, text) {
+  rememberAnswer(e, text)
+  return yield* handback(e, text)
+}
+
+// The text each agent's latest turn answered with, by agent id. A new turn of
+// the agent replaces the entry, so the map holds one turn per agent.
+const answeredTurns = new Map()
+
+function rememberAnswer(e, text) {
+  answeredTurns.set(e.agentId, { turnId: e.turnId, index: e.index, text })
+}
+
+// answeredText is what the turn of a step has already answered with, or null
+// when the step is the turn's first.
+function answeredText(e) {
+  const earlier = answeredTurns.get(e.agentId)
+  return earlier !== undefined && earlier.turnId === e.turnId && e.index > earlier.index ? earlier.text : null
+}
+
+// handback ends the step with a call to the hand-back tool carrying the answer.
+async function* handback(e, text) {
+  const input = { message: text }
+  yield { kind: 'tool', index: ANSWER_BLOCK, id: 'agentcli-handback-' + e.turnId + '-' + e.index, name: HANDBACK_TOOL }
+  yield { kind: 'input', index: ANSWER_BLOCK, json: JSON.stringify(input) }
+  yield { kind: 'stop', stopReason: 'tool_use', usage: null }
+  return { turnId: e.turnId, index: e.index, answer: '', toolUses: [{ name: HANDBACK_TOOL, input }], stopReason: 'tool_use', usage: null }
 }
 
 // answer streams the answer block and ends the step, as a model's reply would.

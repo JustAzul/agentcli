@@ -48,7 +48,7 @@ With the plugin loaded, dispatch through the **agent types**, one per scenario:
 the Agent tool with `subagent_type` set to one, a short `description` and the
 self-contained `prompt`. Each runs its scenario's profile as an agentcli job and
 shows as a native background agent: its row streams what the agent is doing,
-and the completion notification carries the output (cut at 64 KiB) ending in
+and its report carries the output (cut at 64 KiB) ending in
 `[agentcli run <run_id> · conversation <conversation_id> · <outcome>]`.
 
 - The types are offered only once this skill has loaded in the session.

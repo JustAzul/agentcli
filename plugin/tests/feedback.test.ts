@@ -43,7 +43,7 @@ test('what the run does streams into the agent row as thinking, then the answer'
   // Each read starts where the last one ended.
   expect(reads).toEqual(['0', '2'])
   expect(out.chunks.filter((c) => c.kind === 'thinking').every((c) => c.index === 0)).toBe(true)
-  expect(out.chunks.find((c) => c.kind === 'text')).toMatchObject({ index: 1 })
+  expect(out.chunks.find((c) => c.kind === 'tool')).toMatchObject({ index: 1, name: 'SubagentHandback' })
   expect(out.text).toContain('Codex: the token is never checked.')
 })
 

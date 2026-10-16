@@ -83,11 +83,38 @@ test('a subagent of an agent type is answered by an agentcli job, never by the m
   expect(admit.stdin).toBe('Is a TTL cache safe here?')
   // The spawn notice's ETA lookup runs beside the turn.
   expect(w.runs.map((r) => r.argv[1]).filter((command) => command !== 'eta')).toEqual(['exec', 'wait', 'progress', 'status', 'result'])
-  expect(out.text).toContain('Codex says the cache is safe.')
-  expect(out.text).toContain('[agentcli run run-1 · conversation conv-1 · ok]')
-  expect(out.result.answer).toBe(out.text)
-  expect(out.result.stopReason).toBe('end_turn')
-  expect(out.chunks.at(-1)).toMatchObject({ kind: 'stop', stopReason: 'end_turn' })
+  expect(delivered(out)).toContain('Codex says the cache is safe.')
+  expect(delivered(out)).toContain('[agentcli run run-1 · conversation conv-1 · ok]')
+  expect(out.result.stopReason).toBe('tool_use')
+  expect(out.chunks.at(-1)).toMatchObject({ kind: 'stop', stopReason: 'tool_use' })
+})
+
+// The message a step hands back to the agent's caller.
+const delivered = (out: any): string => out.result.toolUses[0].input.message
+
+test('every answer of an agentcli subagent is handed back with SubagentHandback, the failed hand-offs included', async ($, on) => {
+  const w = world(on)
+  w.respond = codex('Codex says the cache is safe.\n')
+  subagent(w, 'ag-1', 'agentcli:second-opinion', [{ role: 'user', text: 'Is a TTL cache safe here?' }])
+  subagent(w, 'ag-2', 'agentcli:code-review', [{ role: 'user', text: 'please review my changes' }])
+  await $.session.start(START)
+
+  const done = await step($, 'ag-1')
+  const refused = await step($, 'ag-2')
+
+  expect(done.result.stopReason).toBe('tool_use')
+  expect(done.result.answer).toBe('')
+  expect(done.result.toolUses).toEqual([{ name: 'SubagentHandback', input: { message: delivered(done) } }])
+  expect(delivered(done)).toContain('Codex says the cache is safe.')
+  expect(done.chunks.filter((c) => c.kind === 'text')).toEqual([])
+  expect(done.chunks.find((c) => c.kind === 'tool')).toMatchObject({ name: 'SubagentHandback' })
+  expect(done.chunks.find((c) => c.kind === 'input')!.json).toBe(JSON.stringify({ message: delivered(done) }))
+  expect(done.chunks.at(-1)).toMatchObject({ kind: 'stop', stopReason: 'tool_use' })
+
+  expect(refused.result.stopReason).toBe('tool_use')
+  expect(refused.result.toolUses[0].name).toBe('SubagentHandback')
+  expect(delivered(refused).startsWith(HANDOFF_FAILED)).toBe(true)
+  expect(refused.chunks.filter((c) => c.kind === 'text')).toEqual([])
 })
 
 test('model requests of the main loop and of other agents reach the model untouched', async ($, on) => {
@@ -117,6 +144,50 @@ test('reminders the engine adds to the prompt are not sent to the agent', async 
   expect(w.runs[0]!.stdin).toBe('Summarize README.md')
 })
 
+test('a later step of the same turn repeats the answer without calling agentcli again', async ($, on) => {
+  const w = world(on)
+  w.respond = codex('Codex says the cache is safe.\n')
+  subagent(w, 'ag-1', 'agentcli:second-opinion', [{ role: 'user', text: 'Is a TTL cache safe here?' }])
+  subagent(w, 'ag-2', 'agentcli:code-review', [{ role: 'user', text: 'please review my changes' }])
+  await $.session.start(START)
+  const first = await step($, 'ag-1', { turnId: 'turn-1', index: 0 })
+  const failed = await step($, 'ag-2', { turnId: 'turn-1', index: 0 })
+  w.runs.length = 0
+
+  const again = await step($, 'ag-1', { turnId: 'turn-1', index: 1 })
+  const failedAgain = await step($, 'ag-2', { turnId: 'turn-1', index: 1 })
+
+  expect(w.runs).toEqual([])
+  expect(w.modelSteps).toEqual([])
+  expect(again.text).toBe(delivered(first))
+  expect(again.chunks.filter((c) => c.kind === 'text').map((c) => c.text)).toEqual([delivered(first)])
+  expect(again.result).toMatchObject({ turnId: 'turn-1', index: 1, answer: delivered(first), toolUses: [], stopReason: 'end_turn' })
+  expect(again.chunks.at(-1)).toMatchObject({ kind: 'stop', stopReason: 'end_turn' })
+  expect(failedAgain.result).toMatchObject({ answer: delivered(failed), toolUses: [], stopReason: 'end_turn' })
+})
+
+test('a new turn of the agent replaces what the earlier turn remembered', async ($, on) => {
+  const w = world(on)
+  w.respond = codex('First answer.')
+  subagent(w, 'ag-1', 'agentcli:cross-check', [{ role: 'user', text: 'Check auth.go' }])
+  await $.session.start(START)
+  await step($, 'ag-1', { turnId: 'turn-1' })
+
+  w.messages['ag-1'] = [
+    { role: 'user', text: 'Check auth.go' },
+    { role: 'assistant', text: 'First answer.' },
+    { role: 'user', text: 'And store.go?' },
+  ]
+  w.respond = codex('Second answer.')
+  const second = await step($, 'ag-1', { turnId: 'turn-2' })
+  w.runs.length = 0
+  const again = await step($, 'ag-1', { turnId: 'turn-2', index: 1 })
+
+  expect(delivered(second)).toContain('Second answer.')
+  expect(again.text).toBe(delivered(second))
+  expect(w.runs).toEqual([])
+})
+
 test('a SendMessage to the subagent continues its agentcli conversation', async ($, on) => {
   const w = world(on)
   w.respond = codex('First answer.')
@@ -130,11 +201,11 @@ test('a SendMessage to the subagent continues its agentcli conversation', async 
     { role: 'user', text: 'Which finding is cheapest to fix?' },
   ]
   w.runs.length = 0
-  const out = await step($, 'ag-1')
+  const out = await step($, 'ag-1', { turnId: 'turn-2' })
 
   expect(w.runs[0]!.argv.slice(1)).toEqual(['send', 'conv-1', ...JOB_FLAGS, '-'])
   expect(w.runs[0]!.stdin).toBe('Which finding is cheapest to fix?')
-  expect(out.text).toContain('First answer.')
+  expect(delivered(out)).toContain('First answer.')
   expect(w.modelSteps).toEqual([])
 })
 
@@ -149,8 +220,8 @@ test('a later turn whose conversation is not recorded is refused, not started af
 
   const out = await step($, 'ag-1')
 
-  expect(out.text.startsWith(HANDOFF_FAILED)).toBe(true)
-  expect(out.text).toContain('send tool')
+  expect(delivered(out).startsWith(HANDOFF_FAILED)).toBe(true)
+  expect(delivered(out)).toContain('send tool')
   expect(w.runs).toEqual([])
   expect(w.modelSteps).toEqual([])
 })
@@ -182,8 +253,8 @@ test('a code-review prompt that is not exactly one target is refused before agen
 
   for (const id of ['a', 'b', 'c']) {
     const out = await step($, id)
-    expect(out.text.startsWith(HANDOFF_FAILED)).toBe(true)
-    expect(out.text).toContain("'uncommitted', 'base <branch>' or 'commit <sha>'")
+    expect(delivered(out).startsWith(HANDOFF_FAILED)).toBe(true)
+    expect(delivered(out)).toContain("'uncommitted', 'base <branch>' or 'commit <sha>'")
   }
   expect(w.runs).toEqual([])
   expect(w.modelSteps).toEqual([])
@@ -202,11 +273,11 @@ test('an agentcli failure becomes an answer that says the hand-off failed', asyn
   }
   const thrown = await step($, 'ag-2')
 
-  expect(refused.text.startsWith(HANDOFF_FAILED)).toBe(true)
-  expect(refused.text).toContain('conversation c-1 has an active turn')
+  expect(delivered(refused).startsWith(HANDOFF_FAILED)).toBe(true)
+  expect(delivered(refused)).toContain('conversation c-1 has an active turn')
   // The harness reports a throwing process.run in its own words; what holds is
   // that the rejection still ends in a hand-off failure.
-  expect(thrown.text.startsWith(HANDOFF_FAILED)).toBe(true)
+  expect(delivered(thrown).startsWith(HANDOFF_FAILED)).toBe(true)
   expect(w.modelSteps).toEqual([])
 })
 
@@ -226,7 +297,7 @@ test('a run is waited for in short slices until it finishes', async ($, on) => {
 
   expect(waits).toBe(3)
   expect(w.runs.find((r) => r.argv[1] === 'wait')!.argv.slice(1)).toEqual(['wait', 'run-1', '--timeout', '5', '--json'])
-  expect(out.text).toContain('late answer')
+  expect(delivered(out)).toContain('late answer')
 })
 
 test('a run that did not deliver leads its answer with how it ended', async ($, on) => {
@@ -237,8 +308,8 @@ test('a run that did not deliver leads its answer with how it ended', async ($, 
 
   const out = await step($, 'ag-1')
 
-  expect(out.text.startsWith('agentcli run run-1 ended timeout: stream disconnected')).toBe(true)
-  expect(out.text).toContain('· timeout]')
+  expect(delivered(out).startsWith('agentcli run run-1 ended timeout: stream disconnected')).toBe(true)
+  expect(delivered(out)).toContain('· timeout]')
 })
 
 test('output over 64 KiB is cut and the answer names the output file', async ($, on) => {
@@ -249,8 +320,8 @@ test('output over 64 KiB is cut and the answer names the output file', async ($,
 
   const out = await step($, 'ag-1')
 
-  expect(out.text).toContain('x'.repeat(65536) + '\n[output cut at 64 KiB; full output at /state/runs/run-1/output.md]')
-  expect(out.text).not.toContain('x'.repeat(65537))
+  expect(delivered(out)).toContain('x'.repeat(65536) + '\n[output cut at 64 KiB; full output at /state/runs/run-1/output.md]')
+  expect(delivered(out)).not.toContain('x'.repeat(65537))
 })
 
 test('the conversations of two subagents are both recorded', async ($, on) => {
@@ -290,6 +361,20 @@ test('tool calls made inside an agentcli subagent are refused', async ($, on) =>
   expect(main.result).toBe('unanswered')
 })
 
+test('an agentcli subagent may call SubagentHandback and no other tool', async ($, on) => {
+  const w = world(on)
+  subagent(w, 'ag-1', 'agentcli:delegation', [{ role: 'user', text: 'q' }])
+  await $.session.start(START)
+
+  const handback: any = await $.tool.call({ tool: 'SubagentHandback', message: 'report', agentId: 'ag-1' } as any)
+  const bash: any = await $.tool.call({ tool: 'Bash', command: 'ls', agentId: 'ag-1' } as any)
+  const read: any = await $.tool.call({ tool: 'Read', file_path: '/etc/passwd', agentId: 'ag-1' } as any)
+
+  expect(handback.result).toBe('unanswered')
+  expect(bash.deny).toContain('agentcli agents run no tools')
+  expect(read.deny).toContain('agentcli agents run no tools')
+})
+
 test('a run that ended with exit code 5 is not waited for again', async ($, on) => {
   const w = world(on)
   const answers = codex('', { state: 'failed', outcome: 'error', error_excerpt: 'provider exited 5' })
@@ -300,7 +385,7 @@ test('a run that ended with exit code 5 is not waited for again', async ($, on) 
   const out = await step($, 'ag-1')
 
   expect(w.runs.filter((r) => r.argv[1] === 'wait').length).toBe(1)
-  expect(out.text.startsWith('agentcli run run-1 ended error: provider exited 5')).toBe(true)
+  expect(delivered(out).startsWith('agentcli run run-1 ended error: provider exited 5')).toBe(true)
 })
 
 test('an output that cannot be read is a hand-off failure, not an empty answer', async ($, on) => {
@@ -312,8 +397,8 @@ test('an output that cannot be read is a hand-off failure, not an empty answer',
 
   const out = await step($, 'ag-1')
 
-  expect(out.text.startsWith(HANDOFF_FAILED)).toBe(true)
-  expect(out.text).toContain('permission denied')
-  expect(out.text).not.toContain('produced no output')
+  expect(delivered(out).startsWith(HANDOFF_FAILED)).toBe(true)
+  expect(delivered(out)).toContain('permission denied')
+  expect(delivered(out)).not.toContain('produced no output')
 })
 

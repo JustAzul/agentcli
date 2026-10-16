@@ -188,19 +188,31 @@ export function world(on: any, opts: { store?: Record<string, unknown> } = {}) {
 }
 
 // step raises one model request in the loop of `agentId` (the main loop when
-// undefined) and reads the whole response.
-export async function step($: any, agentId?: string) {
-  const stream = $.turn.step({ turnId: 'turn-1', index: 0, model: 'claude-haiku-4-5', messageCount: 1, agentId })
+// undefined) and reads the whole response. A later step of the same turn, or a
+// new turn, names its `turnId` and `index`.
+export async function step($: any, agentId?: string, { turnId = 'turn-1', index = 0 }: { turnId?: string; index?: number } = {}) {
+  const { chunks, result } = await drain($.turn.step({ turnId, index, model: 'claude-haiku-4-5', messageCount: 1, agentId }))
+  return { chunks, result, text: answerText(chunks, result) }
+}
+
+// drain reads a stream by hand: the step's result is the stream's return
+// value, which a for-await loop drops.
+async function drain(stream: any) {
   const chunks: any[] = []
-  // Read by hand: the step's result is the stream's return value, which a
-  // for-await loop drops.
   let next = await stream.next()
   while (!next.done) {
     chunks.push(next.value)
     next = await stream.next()
   }
-  const text = chunks.filter((c) => c.kind === 'text').map((c) => c.text).join('')
-  return { chunks, result: next.value, text }
+  return { chunks, result: next.value }
+}
+
+// The answer as the caller reads it: streamed text, or else the message of the
+// SubagentHandback call that delivers an agentcli subagent's answer.
+function answerText(chunks: any[], result: any): string {
+  const streamed = chunks.filter((c) => c.kind === 'text').map((c) => c.text).join('')
+  const handback = result?.toolUses?.find((use: any) => use.name === 'SubagentHandback')
+  return streamed === '' && handback ? String(handback.input.message) : streamed
 }
 
 // The toasts that are not spawn notices.
