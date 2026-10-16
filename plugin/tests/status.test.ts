@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { POLL_MS, SESSION, job, listing, ok, otherRuns, world } from './kit'
+import { POLL_MS, SESSION, job, listing, ok, otherRuns, queued, seeded, world } from './kit'
 
 const START = { surface: 'terminal', isInteractive: true, cwd: '/work' } as const
 
@@ -64,18 +64,33 @@ test('a tick is skipped while the previous one is still running', async ($, on) 
 })
 
 test('a failing poll does not stop the next one', async ($, on) => {
-  const w = world(on)
+  const w = world(on, { store: seeded([queued('run-1')]) })
   let n = 0
   w.respond = (argv) => {
     if (argv[1] === 'result') return ok('done!')
+    if (argv[2] === '--json') return listing()
     n += 1
     if (n === 1) throw new Error('process timed out')
     if (n === 2) return { exitCode: 70, stdout: '', stderr: 'boom' }
-    return listing(job({ state: 'done', outcome: 'ok' }))
+    return ok(JSON.stringify(job({ state: 'done', outcome: 'ok' })))
   }
   await $.session.start(START)
 
   await w.clock.advance(POLL_MS * 3)
+
+  expect(w.submits.length).toBe(1)
+})
+
+test('a failing session listing does not keep a queued job from its notice', async ($, on) => {
+  const w = world(on, { store: seeded([queued('run-1')]) })
+  w.respond = (argv) => {
+    if (argv[1] === 'result') return ok('done!')
+    if (argv[2] === '--json') return { exitCode: 70, stdout: '', stderr: 'boom' }
+    return ok(JSON.stringify(job({ state: 'done', outcome: 'ok' })))
+  }
+  await $.session.start(START)
+
+  await w.clock.advance(POLL_MS)
 
   expect(w.submits.length).toBe(1)
 })

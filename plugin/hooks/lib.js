@@ -7,7 +7,13 @@ export const NOTICE_OUTPUT_BYTES = 8192
 export const RESULT_OUTPUT_BYTES = 65536
 export const JOB_SOURCE = 'mod'
 export const NOTIFIED_LIMIT = 500
-export const NOTIFIED_KEY = 'notified'
+export const DELIVERY_PREFIX = 'delivery:'
+// The most pending entries one poll reads, and how long a session's queue may sit
+// untouched before another session's load removes it.
+export const DELIVERY_BATCH = 50
+export const ABANDONED_MS = 30 * 24 * 60 * 60 * 1000
+// `agentcli status` exits with this code for a run it has no record of.
+export const EXIT_RUN_NOT_FOUND = 4
 
 const TERMINAL_STATES = ['done', 'failed', 'cancelled', 'timeout', 'lost']
 const JOBS_ACTIONS = ['list', 'status', 'result', 'cancel']
@@ -156,6 +162,59 @@ export function remember(notified, id) {
   return [...notified, id].slice(-NOTIFIED_LIMIT)
 }
 
+export function deliveryKey(sessionId) {
+  return DELIVERY_PREFIX + sessionId
+}
+
+// readQueue returns the entries of a stored delivery queue, or none when the
+// stored value is missing or damaged.
+export function readQueue(stored) {
+  return Array.isArray(stored) ? stored.filter((entry) => entry && typeof entry.run_id === 'string') : []
+}
+
+// queueEntry is the record of an admitted job that has not been delivered.
+export function queueEntry(ids, purpose, now) {
+  return {
+    run_id: ids.run_id,
+    conversation_id: ids.conversation_id,
+    purpose: typeof purpose === 'string' && purpose !== '' ? purpose : null,
+    admitted_at: now,
+    attempted_at: null,
+  }
+}
+
+export function withEntry(queue, entry) {
+  return [...queue.filter((kept) => kept.run_id !== entry.run_id), entry]
+}
+
+export function withoutRun(queue, runId) {
+  return queue.filter((entry) => entry.run_id !== runId)
+}
+
+// withAttempt sets when the delivery of a run was tried, or null once the try is
+// known to have failed.
+export function withAttempt(queue, runId, attemptedAt) {
+  return queue.map((entry) => (entry.run_id === runId ? { ...entry, attempted_at: attemptedAt } : entry))
+}
+
+// nextBatch is the entries one poll works, oldest admitted first.
+export function nextBatch(queue) {
+  return [...queue].sort((a, b) => a.admitted_at - b.admitted_at).slice(0, DELIVERY_BATCH)
+}
+
+// attemptedRuns is the run ids whose delivery was tried and not known to have
+// failed: a notice for one of them may already have reached the session.
+export function attemptedRuns(queue) {
+  return new Set(queue.filter((entry) => entry.attempted_at !== null && entry.attempted_at !== undefined).map((entry) => entry.run_id))
+}
+
+// isAbandoned tells that a queue's newest entry is older than ABANDONED_MS; a
+// queue with no entry has nobody to deliver to.
+export function isAbandoned(queue, now) {
+  const newest = Math.max(...queue.map((entry) => Number(entry.admitted_at) || 0))
+  return queue.length === 0 || now - newest > ABANDONED_MS
+}
+
 // cutBytes returns the first `limit` bytes of text, never ending inside a
 // multi-byte character.
 export function cutBytes(text, limit) {
@@ -166,9 +225,12 @@ export function cutBytes(text, limit) {
   return { text: new TextDecoder().decode(bytes.subarray(0, end)), isCut: true }
 }
 
-export function noticeText(job, output) {
+const POSSIBLY_REPEATED = ' (possibly repeated)'
+
+export function noticeText(job, output, isPossiblyRepeated = false) {
   const outcome = job.outcome ?? job.state
-  const head = 'agentcli job ' + job.run_id + ' (' + job.scenario + ', conversation ' + job.conversation_id + ') finished: ' + outcome
+  const mark = isPossiblyRepeated ? POSSIBLY_REPEATED : ''
+  const head = 'agentcli job ' + job.run_id + ' (' + job.scenario + ', conversation ' + job.conversation_id + ') finished: ' + outcome + mark
   if (output === null) {
     return head + '\n\nThe output could not be read; it is at ' + job.output_path
   }

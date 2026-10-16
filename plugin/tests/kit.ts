@@ -8,6 +8,7 @@ export const isShim = (p: string) => p.startsWith('/') && p.endsWith('/bin/agent
 export const TOOL = (name: string) => `mcp__agentcli__${name}`
 
 export type Run = { argv: string[]; stdin?: string; cwd?: string; timeoutMs?: number }
+export type SubmitOutcome = 'accept' | 'drop' | 'throw'
 export type Reply = { exitCode: number; stdout: string; stderr: string }
 export type Responder = (argv: string[], init: any) => Reply | Promise<Reply>
 
@@ -39,6 +40,35 @@ export function listing(...runs: unknown[]) {
   return ok(JSON.stringify({ runs }))
 }
 
+// The delivery queue of a session lives in the store under one key per session.
+export const queueKey = (sessionId = SESSION) => `delivery:${sessionId}`
+export const DAY_MS = 86_400_000
+
+export function queued(runId: string, over: Record<string, unknown> = {}) {
+  return { run_id: runId, conversation_id: 'conv-1', purpose: null, admitted_at: 1_000, attempted_at: null, ...over }
+}
+
+// A store seeded with one session's queue.
+export function seeded(entries: unknown[], sessionId = SESSION): Record<string, unknown> {
+  return { [queueKey(sessionId)]: entries }
+}
+
+// Answers the reads of the delivery: `status <run_id> --json` from the given
+// runs (exit 4, run not found, for any other id), `result` with the output, and
+// an empty listing for the session.
+export function deliveries(runs: Record<string, unknown>, output = 'out'): Responder {
+  return (argv) => {
+    if (argv[1] === 'result') return ok(output)
+    if (argv[1] !== 'status') return listing()
+    if (argv[2] === '--json') return listing()
+    const run = runs[argv[2]!]
+    return run === undefined ? { exitCode: 4, stdout: '', stderr: 'agentcli: run not found\n' } : ok(JSON.stringify(run))
+  }
+}
+
+// The reads of one run's status the delivery made.
+export const statusReads = (w: { runs: Run[] }) => w.runs.filter((r) => r.argv[1] === 'status' && r.argv[2] !== '--json').map((r) => r.argv[2]!)
+
 export const NO_USAGE = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
 
 // The completions a model can answer with.
@@ -62,7 +92,11 @@ export function world(on: any, opts: { store?: Record<string, unknown> } = {}) {
     // Every event name the plugin asked to draw again.
     invalidations: [] as string[],
     statuses: [] as (string | undefined)[],
+    // Every notice the mod tried to submit, an attempt that was dropped or threw included.
     submits: [] as string[],
+    // How a submission ends: the prompt enters, is refused, or the call throws.
+    // A promise holds the submission pending until the test settles it.
+    submitOutcome: (() => 'accept') as (text: string) => SubmitOutcome | Promise<SubmitOutcome>,
     tools: [] as any[],
     commands: [] as any[],
     store: new Map<string, unknown>(Object.entries(opts.store ?? {})),
@@ -116,9 +150,11 @@ export function world(on: any, opts: { store?: Record<string, unknown> } = {}) {
     w.statuses.push(e.text)
     return { value: undefined }
   })
-  on('prompt.submit', (_$: any, e: any) => {
+  on('prompt.submit', async (_$: any, e: any) => {
     w.submits.push(e.text)
-    return { text: e.text }
+    const outcome = await w.submitOutcome(e.text)
+    if (outcome === 'throw') throw new Error('the prompt could not be submitted')
+    return outcome === 'drop' ? { drop: 'busy' } : { text: e.text }
   })
   on('store.get', (_$: any, e: any) => ({ value: w.store.get(e.key) }))
   on('store.set', (_$: any, e: any) => {

@@ -1,6 +1,16 @@
 import {
   POLL_MS,
-  NOTIFIED_KEY,
+  EXIT_RUN_NOT_FOUND,
+  DELIVERY_PREFIX,
+  attemptedRuns,
+  isAbandoned,
+  deliveryKey,
+  nextBatch,
+  queueEntry,
+  readQueue,
+  withAttempt,
+  withEntry,
+  withoutRun,
   admittedJob,
   failureText,
   jobsCommand,
@@ -210,6 +220,7 @@ export function register(on, options) {
     isTurnReadFailureLogged = false
     isNoticeFailureLogged = false
     isSkippedRunLogged = false
+    await loadDeliveryState($)
     if (spawnTimer !== null) spawnTimer.cancel()
     spawnTimer = $.clock.every(BAND_REFRESH_MS, () => {
       void scanSpawns($)
@@ -378,8 +389,37 @@ async function startTurn($, e, kind) {
   if (reply.exitCode !== 0) return { deny: failureText(reply) }
   const ids = admittedJob(reply.stdout)
   if (ids === null) return { deny: 'agentcli printed an unexpected admission result: ' + reply.stdout.trim().slice(0, 500) }
+  await enqueueDelivery($, sessionId, queueEntry(ids, e.scenario, await $.clock.now()))
   startNotice($, () => notifyTurn($, bin, ids.run_id))
   return { result: JSON.stringify(ids) }
+}
+
+// The delivery queues are read, changed and written back one write at a time,
+// so two jobs admitted together, or a poll and an admission, keep each other's
+// entries.
+let queueWrites = Promise.resolve()
+
+// updateQueue applies `change` to the stored queue of a session and writes the
+// result back; a queue left empty is removed.
+function updateQueue($, sessionId, change) {
+  const write = queueWrites.then(async () => {
+    const key = deliveryKey(sessionId)
+    const next = change(readQueue(await $.store.get(key)))
+    if (next.length === 0) await $.store.delete(key)
+    else await $.store.set(key, next)
+  })
+  queueWrites = write.catch(() => {})
+  return write
+}
+
+// enqueueDelivery records an admitted job to be delivered when it ends. The job
+// is admitted already: a queue that cannot be written is logged, never denied.
+async function enqueueDelivery($, sessionId, entry) {
+  try {
+    await updateQueue($, sessionId, (queue) => withEntry(queue, entry))
+  } catch (error) {
+    $.ui.log('could not queue run ' + entry.run_id + ' for its notice: ' + messageOf(error), { to: 'debug' })
+  }
 }
 
 // startNotice runs the work of a notice from a timer, so it outlives the hook
@@ -590,11 +630,20 @@ async function poll($) {
   if (isPolling) return
   isPolling = true
   try {
-    await checkJobs($)
-  } catch {
-    // The next period tries again.
+    await quietly(() => checkJobs($))
+    await quietly(() => deliverQueue($))
   } finally {
     isPolling = false
+  }
+}
+
+// quietly runs one part of the poll; a part that throws leaves the others to
+// run, and the next period tries again.
+async function quietly(work) {
+  try {
+    await work()
+  } catch {
+    // The next period tries again.
   }
 }
 
@@ -611,18 +660,127 @@ async function checkJobs($) {
   // Before the costs are read, so a recording that lands now is counted by them.
   await retryRecordings($)
   await showStatus($, bin, sessionId, runningCount(jobs), terminalRunIds(reply.stdout))
+}
 
-  let notified = readNotified(await $.store.get(NOTIFIED_KEY))
-  for (const job of oldestFirst(jobs)) {
-    if (!isTerminal(job.state) || notified.includes(job.run_id)) continue
-    // Record the job before announcing it, so a failure while announcing can
-    // never produce a second notice.
-    notified = remember(notified, job.run_id)
-    await $.store.set(NOTIFIED_KEY, notified)
-    const output = await readOutput($, bin, job.run_id)
-    $.ui.toast(toastText(job))
-    $.prompt.submit({ text: noticeText(job, output) }).catch(() => {})
+// The runs whose notice may already have reached the session in an earlier load,
+// and whether this load has logged a failed read of a run's status.
+let possiblyRepeated = new Set()
+let isDeliveryFailureLogged = false
+// The runs whose pruning has been logged.
+const loggedPruned = new Set()
+
+// loadDeliveryState starts the delivery of a load: the runs the queue holds a
+// tried delivery for were possibly announced by an earlier load, and the queues
+// of other sessions that nobody has touched for long are removed. It never
+// throws.
+async function loadDeliveryState($) {
+  isDeliveryFailureLogged = false
+  possiblyRepeated = new Set()
+  try {
+    const sessionId = await $.session.id()
+    possiblyRepeated = attemptedRuns(readQueue(await $.store.get(deliveryKey(sessionId))))
+    await removeAbandoned($, deliveryKey(sessionId))
+  } catch (error) {
+    $.ui.log('could not load the job notice queue: ' + messageOf(error), { to: 'debug' })
   }
+}
+
+// removeAbandoned removes every queue but `ownKey` whose newest entry was
+// admitted too long ago, and logs how many there were.
+async function removeAbandoned($, ownKey) {
+  const now = await $.clock.now()
+  let removed = 0
+  for (const key of await $.store.keys()) {
+    if (!key.startsWith(DELIVERY_PREFIX) || key === ownKey) continue
+    if (!isAbandoned(readQueue(await $.store.get(key)), now)) continue
+    await $.store.delete(key)
+    removed += 1
+  }
+  if (removed > 0) $.ui.log('removed ' + removed + ' abandoned job notice queue' + (removed === 1 ? '' : 's'), { to: 'debug' })
+}
+
+// deliverQueue works the session's queue: the oldest pending entries, each by
+// reading its run's status. An entry that fails stays for the next period.
+async function deliverQueue($) {
+  const bin = shimPath($.plugin.root)
+  const sessionId = await $.session.id()
+  for (const entry of nextBatch(readQueue(await $.store.get(deliveryKey(sessionId))))) {
+    await deliverEntry($, bin, sessionId, entry)
+  }
+}
+
+// deliverEntry delivers the notice of one queued run once the run is terminal.
+// It never throws.
+async function deliverEntry($, bin, sessionId, entry) {
+  if (submitting.has(entry.run_id)) return
+  try {
+    const reply = await $.process.run([bin, 'status', entry.run_id, '--json'])
+    if (reply.exitCode === EXIT_RUN_NOT_FOUND) return await dropPruned($, sessionId, entry.run_id)
+    if (reply.exitCode !== 0) return logDeliveryFailure($, failureText(reply))
+    const run = JSON.parse(reply.stdout)
+    if (isTerminal(run.state)) await deliverRun($, bin, sessionId, run)
+  } catch (error) {
+    logDeliveryFailure($, messageOf(error))
+  }
+}
+
+// The runs whose notice is being submitted: the session takes a prompt only
+// when Claude's turn ends, so a submit can stay pending for as long as the turn
+// lasts, and no tick waits for it or submits the same run again meanwhile.
+const submitting = new Set()
+
+// deliverRun marks the attempt before it submits the notice, so a load that
+// dies in between leaves the mark for the next load to read. The submit runs on
+// its own: the entry keeps its mark until the submit settles.
+async function deliverRun($, bin, sessionId, run) {
+  const attemptedAt = await $.clock.now()
+  await updateQueue($, sessionId, (queue) => withAttempt(queue, run.run_id, attemptedAt))
+  const text = noticeText(run, await readOutput($, bin, run.run_id), possiblyRepeated.has(run.run_id))
+  submitting.add(run.run_id)
+  void settleSubmit($, sessionId, run, text)
+}
+
+// settleSubmit ends the submit of a notice. An accepted notice ends the entry; any
+// other end puts the entry back to pending for the next tick. It never throws.
+async function settleSubmit($, sessionId, run, text) {
+  try {
+    if (await isSubmitted($, text)) {
+      await updateQueue($, sessionId, (queue) => withoutRun(queue, run.run_id))
+      await $.ui.toast(toastText(run))
+    } else {
+      await updateQueue($, sessionId, (queue) => withAttempt(queue, run.run_id, null))
+    }
+  } catch (error) {
+    logDeliveryFailure($, messageOf(error))
+  } finally {
+    submitting.delete(run.run_id)
+  }
+}
+
+// isSubmitted tells whether the prompt entered or was queued; a refusal and an
+// error both mean it did not.
+async function isSubmitted($, text) {
+  try {
+    const result = await $.prompt.submit({ text })
+    return typeof result?.text === 'string'
+  } catch {
+    return false
+  }
+}
+
+// dropPruned removes the entry of a run agentcli no longer has, and logs it once.
+async function dropPruned($, sessionId, runId) {
+  await updateQueue($, sessionId, (queue) => withoutRun(queue, runId))
+  if (loggedPruned.has(runId)) return
+  loggedPruned.add(runId)
+  $.ui.log('run ' + runId + ' is no longer known to agentcli; its notice is dropped', { to: 'debug' })
+}
+
+// logDeliveryFailure logs the first failed read of the load.
+function logDeliveryFailure($, failure) {
+  if (isDeliveryFailureLogged) return
+  isDeliveryFailureLogged = true
+  $.ui.log('could not deliver a job notice: ' + failure + '; the next period tries again', { to: 'debug' })
 }
 
 async function showStatus($, bin, sessionId, running, terminal) {

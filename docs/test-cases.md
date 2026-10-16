@@ -539,8 +539,12 @@ Fixtures for this section:
 - [ ] **link no downgrade (FR43):** a launcher with `build_seq` 50, then `link` from a build with `build_seq` 40 → the launcher is unchanged. From 60 → updated.
 - [ ] **link stale path (FR43):** the launcher names an install path that was deleted → `link` from any build rewrites it.
 - [ ] **annotate replay (FR33):** the same annotation appended twice → the folded attrs are identical to a single application.
-- [ ] **mod dedup across reload (FR47):** a job finishes, a notice is submitted, then `/reload-plugins` → no second notice for that run id.
-- [ ] **mod notified-set bound (FR47):** 501 finished jobs notified → the persisted set holds exactly the 500 most recent ids.
+- [ ] **mod dedup across reload (FR47):** a job finishes, its notice is accepted, then `/reload-plugins` → no second notice for that run id.
+- [ ] **mod notice window (FR47):** 25 jobs of the session end between two ticks → 25 notices, read by run id; 60 pending entries → 50 status reads this tick, oldest first, the rest next tick.
+- [ ] **mod notice retry (FR47):** the host drops the notice (`{ drop }`) or the submit rejects → the entry stays and the next tick submits it again, unmarked.
+- [ ] **mod notice repeat (FR47):** a reload finds an entry with an attempt recorded → the notice is delivered with ` (possibly repeated)` after the outcome.
+- [ ] **mod notice pruned run (FR47):** `status <run_id>` exits 4 → the entry leaves the queue and one debug-log line names it.
+- [ ] **mod abandoned queues (FR47):** another session's queue whose newest entry is 31 days old → removed at session start; one 2 days old → kept.
 - [ ] **dist reproducible (FR40):** `make dist` twice on the same commit → identical binaries (byte-equal) and identical `SHA256SUMS`.
 - [ ] **existing release kept (FR93):** the fake `gh` already has release `v0.3.0` → `publish-release.sh` exits 0, says the release exists, and runs no `gh release create`, so the tag stays on the build it named.
 
