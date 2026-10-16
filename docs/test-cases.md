@@ -541,6 +541,8 @@ Fixtures for this section:
 - [ ] **annotate replay (FR33):** the same annotation appended twice → the folded attrs are identical to a single application.
 - [ ] **mod dedup across reload (FR47):** a job finishes, its notice is accepted, then `/reload-plugins` → no second notice for that run id.
 - [ ] **mod notice window (FR47):** 25 jobs of the session end between two ticks → 25 notices, read by run id; 60 pending entries → 50 status reads this tick, oldest first, the rest next tick.
+- [ ] **mod notice rotation (FR47):** 60 pending entries, the 50 oldest still running and the 10 newest done → all 10 notices are submitted within two ticks.
+- [ ] **mod notice write failure (FR47):** the queue write fails at admission → one toast, the next tick writes the entry, and the job's notice is delivered when it ends; a store that never accepts the write → the notice is delivered once from memory.
 - [ ] **mod notice retry (FR47):** the host drops the notice (`{ drop }`) or the submit rejects → the entry stays and the next tick submits it again, unmarked.
 - [ ] **mod notice repeat (FR47):** a reload finds an entry with an attempt recorded → the notice is delivered with ` (possibly repeated)` after the outcome.
 - [ ] **mod notice pruned run (FR47):** `status <run_id>` exits 4 → the entry leaves the queue and one debug-log line names it.

@@ -16,6 +16,7 @@ import {
   jobsCommand,
   jobsListing,
   noticeText,
+  repeatedNoticeText,
   oldestFirst,
   readNotified,
   remember,
@@ -412,14 +413,75 @@ function updateQueue($, sessionId, change) {
   return write
 }
 
+// The entries admitted in this load whose queue write failed, by run id, with
+// the session each belongs to. The poll writes them again, and an entry still
+// here when its run ends is delivered from here like a queued one.
+const unwritten = new Map()
+let isUnwrittenReported = false
+
 // enqueueDelivery records an admitted job to be delivered when it ends. The job
-// is admitted already: a queue that cannot be written is logged, never denied.
+// is admitted already: an entry that cannot be written is held and written again
+// by every poll, never denied and never lost.
 async function enqueueDelivery($, sessionId, entry) {
   try {
     await updateQueue($, sessionId, (queue) => withEntry(queue, entry))
   } catch (error) {
-    $.ui.log('could not queue run ' + entry.run_id + ' for its notice: ' + messageOf(error), { to: 'debug' })
+    unwritten.set(entry.run_id, { sessionId, entry })
+    await reportUnwritten($, entry.run_id, messageOf(error))
   }
+}
+
+// reportUnwritten logs every entry that could not be written and shows the
+// first of the load in a toast. It never throws.
+async function reportUnwritten($, runId, failure) {
+  const text = 'the finish notice of run ' + runId + ' could not be queued yet and will be retried'
+  $.ui.log(text + ': ' + failure, { to: 'debug' })
+  if (isUnwrittenReported) return
+  isUnwrittenReported = true
+  try {
+    await $.ui.toast(text)
+  } catch {
+    // The log has it.
+  }
+}
+
+// flushUnwritten tries to write the held entries into the stored queues.
+async function flushUnwritten($) {
+  for (const held of [...unwritten.values()]) await writeHeld($, held)
+}
+
+// writeHeld writes one held entry. The entry stays held when the write fails, or
+// when a submit changed it meanwhile (the next poll writes it as it is then); one
+// that was delivered meanwhile is taken out of the queue again.
+async function writeHeld($, { sessionId, entry }) {
+  try {
+    await updateQueue($, sessionId, (queue) => withEntry(queue, entry))
+  } catch (error) {
+    return logDeliveryFailure($, 'could not write the job notice queue: ' + messageOf(error))
+  }
+  const current = unwritten.get(entry.run_id)
+  if (current === undefined) await updateQueue($, sessionId, (queue) => withoutRun(queue, entry.run_id))
+  else if (current.entry === entry) unwritten.delete(entry.run_id)
+}
+
+// changeEntry applies a change to the entry of a run, in memory while the entry
+// is held and in the stored queue otherwise.
+async function changeEntry($, sessionId, runId, change) {
+  const held = unwritten.get(runId)
+  if (held === undefined) return updateQueue($, sessionId, change)
+  const [next] = change([held.entry])
+  if (next === undefined) unwritten.delete(runId)
+  else unwritten.set(runId, { ...held, entry: next })
+}
+
+// heldQueue is the queue of a session as the poll works it: the stored entries,
+// those held in memory in place of their stored copy.
+async function heldQueue($, sessionId) {
+  let queue = readQueue(await $.store.get(deliveryKey(sessionId)))
+  for (const held of unwritten.values()) {
+    if (held.sessionId === sessionId) queue = withEntry(queue, held.entry)
+  }
+  return queue
 }
 
 // startNotice runs the work of a notice from a timer, so it outlives the hook
@@ -630,6 +692,7 @@ async function poll($) {
   if (isPolling) return
   isPolling = true
   try {
+    await quietly(() => flushUnwritten($))
     await quietly(() => checkJobs($))
     await quietly(() => deliverQueue($))
   } finally {
@@ -666,6 +729,8 @@ async function checkJobs($) {
 // and whether this load has logged a failed read of a run's status.
 let possiblyRepeated = new Set()
 let isDeliveryFailureLogged = false
+// The last entry the previous poll read, which the next batch starts after.
+let readCursor = null
 // The runs whose pruning has been logged.
 const loggedPruned = new Set()
 
@@ -675,6 +740,8 @@ const loggedPruned = new Set()
 // throws.
 async function loadDeliveryState($) {
   isDeliveryFailureLogged = false
+  isUnwrittenReported = false
+  readCursor = null
   possiblyRepeated = new Set()
   try {
     const sessionId = await $.session.id()
@@ -704,9 +771,9 @@ async function removeAbandoned($, ownKey) {
 async function deliverQueue($) {
   const bin = shimPath($.plugin.root)
   const sessionId = await $.session.id()
-  for (const entry of nextBatch(readQueue(await $.store.get(deliveryKey(sessionId))))) {
-    await deliverEntry($, bin, sessionId, entry)
-  }
+  const batch = nextBatch(await heldQueue($, sessionId), readCursor)
+  if (batch.length > 0) readCursor = batch[batch.length - 1]
+  for (const entry of batch) await deliverEntry($, bin, sessionId, entry)
 }
 
 // deliverEntry delivers the notice of one queued run once the run is terminal.
@@ -734,8 +801,9 @@ const submitting = new Set()
 // its own: the entry keeps its mark until the submit settles.
 async function deliverRun($, bin, sessionId, run) {
   const attemptedAt = await $.clock.now()
-  await updateQueue($, sessionId, (queue) => withAttempt(queue, run.run_id, attemptedAt))
-  const text = noticeText(run, await readOutput($, bin, run.run_id), possiblyRepeated.has(run.run_id))
+  await changeEntry($, sessionId, run.run_id, (queue) => withAttempt(queue, run.run_id, attemptedAt))
+  const noticeOf = possiblyRepeated.has(run.run_id) ? repeatedNoticeText : noticeText
+  const text = noticeOf(run, await readOutput($, bin, run.run_id))
   submitting.add(run.run_id)
   void settleSubmit($, sessionId, run, text)
 }
@@ -745,10 +813,10 @@ async function deliverRun($, bin, sessionId, run) {
 async function settleSubmit($, sessionId, run, text) {
   try {
     if (await isSubmitted($, text)) {
-      await updateQueue($, sessionId, (queue) => withoutRun(queue, run.run_id))
+      await changeEntry($, sessionId, run.run_id, (queue) => withoutRun(queue, run.run_id))
       await $.ui.toast(toastText(run))
     } else {
-      await updateQueue($, sessionId, (queue) => withAttempt(queue, run.run_id, null))
+      await changeEntry($, sessionId, run.run_id, (queue) => withAttempt(queue, run.run_id, null))
     }
   } catch (error) {
     logDeliveryFailure($, messageOf(error))
@@ -770,7 +838,7 @@ async function isSubmitted($, text) {
 
 // dropPruned removes the entry of a run agentcli no longer has, and logs it once.
 async function dropPruned($, sessionId, runId) {
-  await updateQueue($, sessionId, (queue) => withoutRun(queue, runId))
+  await changeEntry($, sessionId, runId, (queue) => withoutRun(queue, runId))
   if (loggedPruned.has(runId)) return
   loggedPruned.add(runId)
   $.ui.log('run ' + runId + ' is no longer known to agentcli; its notice is dropped', { to: 'debug' })

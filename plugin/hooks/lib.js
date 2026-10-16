@@ -197,9 +197,22 @@ export function withAttempt(queue, runId, attemptedAt) {
   return queue.map((entry) => (entry.run_id === runId ? { ...entry, attempted_at: attemptedAt } : entry))
 }
 
-// nextBatch is the entries one poll works, oldest admitted first.
-export function nextBatch(queue) {
-  return [...queue].sort((a, b) => a.admitted_at - b.admitted_at).slice(0, DELIVERY_BATCH)
+// byAdmission orders entries by when they were admitted, a run id breaking a tie.
+function byAdmission(a, b) {
+  if (a.admitted_at !== b.admitted_at) return a.admitted_at - b.admitted_at
+  return a.run_id < b.run_id ? -1 : a.run_id > b.run_id ? 1 : 0
+}
+
+// nextBatch is the entries one poll works, oldest admitted first. A queue of
+// more than DELIVERY_BATCH entries is read in turns: the batch starts after
+// `cursor`, the last entry the previous batch read (null before the first), and
+// wraps around, so entries behind a long run of unfinished ones are still reached.
+export function nextBatch(queue, cursor) {
+  const sorted = [...queue].sort(byAdmission)
+  if (sorted.length <= DELIVERY_BATCH || cursor === null) return sorted.slice(0, DELIVERY_BATCH)
+  const after = sorted.findIndex((entry) => byAdmission(entry, cursor) > 0)
+  const from = after === -1 ? 0 : after
+  return [...sorted.slice(from), ...sorted.slice(0, from)].slice(0, DELIVERY_BATCH)
 }
 
 // attemptedRuns is the run ids whose delivery was tried and not known to have
@@ -227,9 +240,18 @@ export function cutBytes(text, limit) {
 
 const POSSIBLY_REPEATED = ' (possibly repeated)'
 
-export function noticeText(job, output, isPossiblyRepeated = false) {
+export function noticeText(job, output) {
+  return noticeWith(job, output, '')
+}
+
+// repeatedNoticeText is the notice of a run whose notice may already have reached
+// the session in an earlier load.
+export function repeatedNoticeText(job, output) {
+  return noticeWith(job, output, POSSIBLY_REPEATED)
+}
+
+function noticeWith(job, output, mark) {
   const outcome = job.outcome ?? job.state
-  const mark = isPossiblyRepeated ? POSSIBLY_REPEATED : ''
   const head = 'agentcli job ' + job.run_id + ' (' + job.scenario + ', conversation ' + job.conversation_id + ') finished: ' + outcome + mark
   if (output === null) {
     return head + '\n\nThe output could not be read; it is at ' + job.output_path

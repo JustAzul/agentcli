@@ -101,6 +101,8 @@ export function world(on: any, opts: { store?: Record<string, unknown> } = {}) {
     commands: [] as any[],
     store: new Map<string, unknown>(Object.entries(opts.store ?? {})),
     storeWrites: [] as { key: string; value: unknown }[],
+    // How many of the next store writes fail; Infinity fails them all.
+    storeSetFailures: 0,
     sessionId: SESSION,
     refuseCommand: false,
     respond: ((argv: string[]) => {
@@ -158,6 +160,10 @@ export function world(on: any, opts: { store?: Record<string, unknown> } = {}) {
   })
   on('store.get', (_$: any, e: any) => ({ value: w.store.get(e.key) }))
   on('store.set', (_$: any, e: any) => {
+    if (w.storeSetFailures > 0) {
+      w.storeSetFailures -= 1
+      throw new Error('the store is unavailable')
+    }
     w.store.set(e.key, JSON.parse(JSON.stringify(e.value)))
     w.storeWrites.push({ key: e.key, value: e.value })
     return { value: undefined }

@@ -329,3 +329,87 @@ test('a pending submit that resolves refused puts the entry back and is tried ag
   expect(w.store.has(queueKey())).toBe(false)
   expect(w.toasts.length).toBe(1)
 })
+
+test('a queue longer than one batch is read in turns, so a finished job behind 50 running ones is still delivered', async ($, on) => {
+  const ids = Array.from({ length: 60 }, (_, i) => 'r-' + String(i).padStart(2, '0'))
+  const entries = ids.map((id, i) => queued(id, { admitted_at: 1_000 + i }))
+  const w = world(on, { store: seeded(entries) })
+  w.respond = deliveries(Object.fromEntries(ids.map((id, i) => [id, job({ run_id: id, state: i < 50 ? 'running' : 'done', outcome: 'ok' })])))
+  await $.session.start(START)
+
+  await w.clock.advance(POLL_MS)
+  expect(w.submits).toEqual([])
+  await w.clock.advance(POLL_MS)
+
+  expect(w.submits.length).toBe(10)
+  expect((w.store.get(queueKey()) as any[]).length).toBe(50)
+})
+
+test('a queue of at most 50 entries is read whole, oldest first, on every tick', async ($, on) => {
+  const ids = Array.from({ length: 50 }, (_, i) => 'r-' + String(i).padStart(2, '0'))
+  const w = world(on, { store: seeded(ids.map((id, i) => queued(id, { admitted_at: 1_000 + i }))) })
+  w.respond = deliveries(Object.fromEntries(ids.map((id) => [id, job({ run_id: id, state: 'running' })])))
+  await $.session.start(START)
+
+  await w.clock.advance(POLL_MS * 2)
+
+  expect(statusReads(w)).toEqual([...ids, ...ids])
+})
+
+const NOT_QUEUED = 'could not be queued'
+
+test('a queue write that fails at admission is retried on the next tick, with one toast, and the notice follows', async ($, on) => {
+  const w = world(on)
+  w.respond = () => ok(JSON.stringify(ADMITTED))
+  await $.session.start(START)
+  w.storeSetFailures = 1
+
+  await $.tool.call({ tool: TOOL('ask'), prompt: 'p' })
+
+  expect(w.store.has(queueKey())).toBe(false)
+  expect(w.toasts.filter((text) => text.includes(NOT_QUEUED) && text.includes('run-1')).length).toBe(1)
+  expect(w.debugLogs.some((line) => line.includes('run-1') && line.includes(NOT_QUEUED))).toBe(true)
+
+  let state = 'running'
+  w.respond = (argv, init) => deliveries({ 'run-1': job({ run_id: 'run-1', state, outcome: 'ok' }) })(argv, init)
+  await w.clock.advance(POLL_MS)
+
+  expect((w.store.get(queueKey()) as any[]).map((entry) => entry.run_id)).toEqual(['run-1'])
+
+  state = 'done'
+  await w.clock.advance(POLL_MS)
+
+  expect(w.submits.length).toBe(1)
+  expect(w.store.has(queueKey())).toBe(false)
+  expect(w.toasts.filter((text) => text.includes(NOT_QUEUED)).length).toBe(1)
+})
+
+test('an entry the store never accepts is delivered from memory once, and not again', async ($, on) => {
+  const w = world(on)
+  w.respond = () => ok(JSON.stringify(ADMITTED))
+  await $.session.start(START)
+  w.storeSetFailures = Infinity
+
+  await $.tool.call({ tool: TOOL('ask'), prompt: 'p' })
+  w.respond = deliveries({ 'run-1': finished({ run_id: 'run-1' }) })
+  await w.clock.advance(POLL_MS * 3)
+
+  expect(w.submits.length).toBe(1)
+  expect(w.submits[0]).toContain('agentcli job run-1')
+  expect(w.toasts.filter((text) => text.includes(NOT_QUEUED)).length).toBe(1)
+  expect(w.toasts.filter((text) => text.startsWith('job run-1 finished')).length).toBe(1)
+})
+
+test('several entries the store refuses raise one toast between them, and each is logged', async ($, on) => {
+  const w = world(on)
+  let n = 0
+  w.respond = () => ok(JSON.stringify({ ...ADMITTED, run_id: 'run-' + ++n }))
+  await $.session.start(START)
+  w.storeSetFailures = Infinity
+
+  await $.tool.call({ tool: TOOL('ask'), prompt: 'a' })
+  await $.tool.call({ tool: TOOL('ask'), prompt: 'b' })
+
+  expect(w.toasts.filter((text) => text.includes(NOT_QUEUED)).length).toBe(1)
+  expect(w.debugLogs.filter((line) => line.includes(NOT_QUEUED)).length).toBe(2)
+})
