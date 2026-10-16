@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { SESSION, isShim, ok, step, world } from './kit'
+import { SESSION, isShim, ok, startTurn, step, world } from './kit'
 
 const START = { surface: 'terminal', isInteractive: true, cwd: '/work' } as const
 const HANDOFF_FAILED = 'agentcli: the hand-off to the agent failed, so this is not its answer.'
@@ -223,6 +223,105 @@ test('a later turn whose conversation is not recorded is refused, not started af
   expect(delivered(out).startsWith(HANDOFF_FAILED)).toBe(true)
   expect(delivered(out)).toContain('send tool')
   expect(w.runs).toEqual([])
+  expect(w.modelSteps).toEqual([])
+})
+
+test('a subagent whose session saved no transcript is answered from the prompt its turn started with', async ($, on) => {
+  const w = world(on)
+  w.respond = codex('Codex says the cache is safe.\n')
+  subagent(w, 'ag-1', 'agentcli:second-opinion', [])
+  await $.session.start(START)
+  await startTurn($, 'ag-1', 'Is a TTL cache safe here?')
+
+  const out = await step($, 'ag-1')
+
+  expect(w.runs[0]!.argv.slice(1)).toEqual(['exec', '--scenario', 'second-opinion', ...JOB_FLAGS, '-'])
+  expect(w.runs[0]!.stdin).toBe('Is a TTL cache safe here?')
+  expect(delivered(out)).toContain('Codex says the cache is safe.')
+  expect(w.modelSteps).toEqual([])
+})
+
+test('reminders in the prompt a turn started with are not sent to the agent', async ($, on) => {
+  const w = world(on)
+  w.respond = codex('done')
+  subagent(w, 'ag-1', 'agentcli:adhoc', [])
+  await $.session.start(START)
+  await startTurn($, 'ag-1', '<system-reminder>\nsession context\n</system-reminder>\nSummarize README.md')
+
+  await step($, 'ag-1')
+
+  expect(w.runs[0]!.stdin).toBe('Summarize README.md')
+})
+
+test('a SendMessage is sent as the saved message, without the framing its turn started with', async ($, on) => {
+  const w = world(on, { store: { 'agent-conversations': [{ agent_id: 'ag-1', conversation_id: 'conv-1' }] } })
+  w.respond = codex('Second answer.')
+  subagent(w, 'ag-1', 'agentcli:adhoc', [
+    { role: 'user', text: 'First question' },
+    { role: 'assistant', text: 'First answer.' },
+    { role: 'user', text: 'Which finding is cheapest to fix?' },
+  ])
+  await $.session.start(START)
+  await startTurn($, 'ag-1', 'The coordinator sent a message while you were working:\nWhich finding is cheapest to fix?\n\nAddress this before completing your current task.', 'turn-2')
+
+  await step($, 'ag-1', { turnId: 'turn-2' })
+
+  expect(w.runs[0]!.argv.slice(1)).toEqual(['send', 'conv-1', ...JOB_FLAGS, '-'])
+  expect(w.runs[0]!.stdin).toBe('Which finding is cheapest to fix?')
+})
+
+test('a turn that started with no text is answered from the saved prompt', async ($, on) => {
+  const w = world(on)
+  w.respond = codex('done')
+  subagent(w, 'ag-1', 'agentcli:adhoc', [{ role: 'user', text: 'Summarize README.md' }])
+  await $.session.start(START)
+  await startTurn($, 'ag-1', '')
+
+  await step($, 'ag-1')
+
+  expect(w.runs[0]!.stdin).toBe('Summarize README.md')
+})
+
+test('the prompt a turn started with is never used for a later turn', async ($, on) => {
+  const w = world(on)
+  w.respond = codex('done')
+  subagent(w, 'ag-1', 'agentcli:adhoc', [])
+  await $.session.start(START)
+  await startTurn($, 'ag-1', 'first question', 'turn-1')
+
+  const out = await step($, 'ag-1', { turnId: 'turn-2' })
+
+  expect(delivered(out).startsWith(HANDOFF_FAILED)).toBe(true)
+  expect(delivered(out)).toContain('the prompt is empty')
+  expect(w.runs).toEqual([])
+})
+
+test('a turn with no prompt anywhere is a hand-off failure and starts no agentcli process', async ($, on) => {
+  const w = world(on)
+  subagent(w, 'ag-1', 'agentcli:adhoc', [])
+  await $.session.start(START)
+  await startTurn($, 'ag-1', '')
+
+  const out = await step($, 'ag-1')
+
+  expect(delivered(out).startsWith(HANDOFF_FAILED)).toBe(true)
+  expect(delivered(out).endsWith('the prompt is empty')).toBe(true)
+  expect(w.runs).toEqual([])
+  expect(w.modelSteps).toEqual([])
+})
+
+test('a SendMessage to a subagent whose session saved no transcript continues its recorded conversation', async ($, on) => {
+  const w = world(on, { store: { 'agent-conversations': [{ agent_id: 'ag-1', conversation_id: 'conv-1' }] } })
+  w.respond = codex('Second answer.')
+  subagent(w, 'ag-1', 'agentcli:cross-check', [])
+  await $.session.start(START)
+  await startTurn($, 'ag-1', 'Which finding is cheapest to fix?', 'turn-2')
+
+  const out = await step($, 'ag-1', { turnId: 'turn-2' })
+
+  expect(w.runs[0]!.argv.slice(1)).toEqual(['send', 'conv-1', ...JOB_FLAGS, '-'])
+  expect(w.runs[0]!.stdin).toBe('Which finding is cheapest to fix?')
+  expect(delivered(out)).toContain('Second answer.')
   expect(w.modelSteps).toEqual([])
 })
 

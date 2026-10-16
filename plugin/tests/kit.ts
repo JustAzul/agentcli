@@ -162,6 +162,8 @@ export function world(on: any, opts: { store?: Record<string, unknown> } = {}) {
     yield { kind: 'stop', stopReason: 'end_turn', usage: null }
     return { turnId: e.turnId, index: e.index, answer: 'a Claude model answered', toolUses: [], stopReason: 'end_turn', usage: null }
   })
+  // The engine's own turn start: it opens the turn the steps then run in.
+  on('turn.start', (_$: any, e: any) => ({ turnId: e.turnId }))
   on('session.surfaces', () => ({ value: w.surfaces }))
   on('model.complete', async (_$: any, e: any) => {
     w.modelRequests.push(e)
@@ -193,6 +195,12 @@ export function world(on: any, opts: { store?: Record<string, unknown> } = {}) {
 export async function step($: any, agentId?: string, { turnId = 'turn-1', index = 0 }: { turnId?: string; index?: number } = {}) {
   const { chunks, result } = await drain($.turn.step({ turnId, index, model: 'claude-haiku-4-5', messageCount: 1, agentId }))
   return { chunks, result, text: answerText(chunks, result) }
+}
+
+// startTurn raises the start of one turn in the loop of `agentId`, with the
+// prompt the run begins with.
+export async function startTurn($: any, agentId: string, text: string, turnId = 'turn-1') {
+  await $.turn.start({ text, turnId, agentId })
 }
 
 // drain reads a stream by hand: the step's result is the stream's return

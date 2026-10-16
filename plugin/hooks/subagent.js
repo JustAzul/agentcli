@@ -72,10 +72,17 @@ export function typeOf(pluginName, fullType) {
 }
 
 // turnPrompt is the newest user message of a subagent's conversation: the
-// Agent call's prompt on the first turn, a SendMessage on a later one.
-export function turnPrompt(rows) {
+// Agent call's prompt on the first turn, a SendMessage on a later one. A
+// session that saves no transcript has no rows, and then the text the turn
+// started with answers. The rows come first: on a turn a SendMessage woke, the
+// start text wraps the message in the engine's own framing.
+export function turnPrompt(rows, startText) {
   const last = [...rows].reverse().find((row) => row && row.role === 'user')
-  return String(last?.text ?? '').replace(REMINDER, '').trim()
+  return cleanPrompt(last?.text) || cleanPrompt(startText)
+}
+
+function cleanPrompt(text) {
+  return String(text ?? '').replace(REMINDER, '').trim()
 }
 
 // hasAnswered tells a later turn from the first: the agent already replied.

@@ -181,6 +181,7 @@ export function register(on, options) {
   summaries = createSummarizer(options ?? {})
   pendingRecordings.length = 0
   answeredTurns.clear()
+  startTexts.clear()
   isLossToastShown = false
   service = createService()
   // Only the spread and the noun: a step that fails unloads the whole plugin.
@@ -255,6 +256,13 @@ export function register(on, options) {
     return (await isOfferedHere($)) ? next(e) : { isOffered: false }
   }).catch(($, e, next) => (next.called || typeOf($.plugin.name, e.agent) === null ? next(e) : { isOffered: false }))
 
+  // The text an agentcli subagent's turn started with: its prompt when a
+  // session that saves no transcript has no rows to read it from.
+  on('turn.start', async ($, e, next) => {
+    if ((await subagentTypeOf($, e.agentId)) !== null) startTexts.set(e.agentId, { turnId: e.turnId, text: e.text })
+    return next(e)
+  }).catch(($, e, next) => next(e))
+
   on('turn.step', async function* ($, e, next) {
     const type = await subagentTypeOf($, e.agentId)
     if (type === null) return yield* next(e)
@@ -263,7 +271,7 @@ export function register(on, options) {
     const answered = answeredText(e)
     if (answered !== null) return yield* answer(e, answered)
     yield thinking('agentcli · ' + type)
-    return yield* deliver(e, yield* followTurn($, e.agentId, type, next.signal))
+    return yield* deliver(e, yield* followTurn($, { agentId: e.agentId, turnId: e.turnId, type }, next.signal))
   }).catch(async function* ($, e, next) {
     if (next.called || !isKnownSubagent(e.agentId)) return yield* next(e)
     return yield* deliver(e, handoffFailure('the plugin hook failed: ' + failureOf(next.error)))
@@ -973,6 +981,17 @@ function answeredText(e) {
   return earlier !== undefined && earlier.turnId === e.turnId && e.index > earlier.index ? earlier.text : null
 }
 
+// The prompt each agentcli agent's latest turn started with, by agent id, as
+// the turn.start event carried it. A new turn replaces the entry.
+const startTexts = new Map()
+
+// startTextOf is the prompt the given turn started with, or '' when no start was
+// heard for that turn: a text kept for an earlier turn is never its prompt.
+function startTextOf(agentId, turnId) {
+  const started = startTexts.get(agentId)
+  return started !== undefined && started.turnId === turnId ? started.text : ''
+}
+
 // handback ends the step with a call to the hand-back tool carrying the answer.
 async function* handback(e, text) {
   const input = { message: text }
@@ -989,23 +1008,24 @@ async function* answer(e, text) {
   return { turnId: e.turnId, index: e.index, answer: text, toolUses: [], stopReason: 'end_turn', usage: null }
 }
 
-// followTurn shows the turn's run as it works and returns the answer.
-async function* followTurn($, agentId, type, signal) {
+// followTurn shows the turn's run as it works and returns the answer. `turn`
+// names the agent, the turn and the agent's type.
+async function* followTurn($, turn, signal) {
   try {
-    return yield* runSubagentTurn($, agentId, type, signal)
+    return yield* runSubagentTurn($, turn, signal)
   } catch (error) {
     return handoffFailure(messageOf(error))
   } finally {
-    turnAgents.delete(agentId)
+    turnAgents.delete(turn.agentId)
   }
 }
 
-async function* runSubagentTurn($, agentId, type, signal) {
-  const rows = await $.session.messages({ agentId })
+async function* runSubagentTurn($, turn, signal) {
+  const rows = await $.session.messages({ agentId: turn.agentId })
   if (!Array.isArray(rows)) return handoffFailure('could not read the prompt: ' + rows.deny)
 
   const bin = shimPath($.plugin.root)
-  const built = await subagentCommand($, bin, agentId, type, rows)
+  const built = await subagentCommand($, bin, turn, rows)
   if (built.error) return handoffFailure(built.error)
 
   const reply = await $.process.run(built.argv, { stdin: built.stdin, timeoutMs: ADMIT_TIMEOUT_MS })
@@ -1013,23 +1033,22 @@ async function* runSubagentTurn($, agentId, type, signal) {
   const ids = admittedJob(reply.stdout)
   if (ids === null) return handoffFailure('agentcli printed an unexpected admission result: ' + reply.stdout.trim().slice(0, 500))
 
-  startNotice($, () => notifyAdmitted($, bin, ids.run_id, type, AGENT_SOURCE))
-  turnAgents.set(agentId, { runId: ids.run_id, type })
-  await recordConversation($, agentId, ids.conversation_id)
+  startNotice($, () => notifyAdmitted($, bin, ids.run_id, turn.type, AGENT_SOURCE))
+  turnAgents.set(turn.agentId, { runId: ids.run_id, type: turn.type })
+  await recordConversation($, turn.agentId, ids.conversation_id)
   yield* followOwnRun($, bin, ids.run_id, signal)
   return finalAnswer($, bin, ids.run_id)
 }
 
 // subagentCommand starts the conversation on the agent's first turn and
 // continues it on every later one (a SendMessage to the agent).
-async function subagentCommand($, bin, agentId, type, rows) {
+async function subagentCommand($, bin, turn, rows) {
   const sessionId = await $.session.id()
-  const prompt = turnPrompt(rows)
-  if (!hasAnswered(rows)) return firstTurnCommand(type, bin, sessionId, prompt)
-
-  const conversationId = conversationOf(readConversations(await $.store.get(CONVERSATIONS_KEY)), agentId)
-  if (conversationId === null) return { error: LOST_CONVERSATION }
-  return followUpCommand(bin, sessionId, conversationId, prompt)
+  const prompt = turnPrompt(rows, startTextOf(turn.agentId, turn.turnId))
+  const conversationId = conversationOf(readConversations(await $.store.get(CONVERSATIONS_KEY)), turn.agentId)
+  if (conversationId !== null) return followUpCommand(bin, sessionId, conversationId, prompt)
+  if (hasAnswered(rows)) return { error: LOST_CONVERSATION }
+  return firstTurnCommand(turn.type, bin, sessionId, prompt)
 }
 
 async function recordConversation($, agentId, conversationId) {
