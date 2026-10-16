@@ -14,13 +14,15 @@ state. If the user has a diff in mind, use code-review instead.
 ## Dispatch
 
 ```bash
-agentcli exec --scenario cross-check --cwd <repo-root> --background --json - <<'PROMPT'
+msgate exec --purpose cross-check --model gpt-6.1-sol --effort high --sandbox read-only --cwd <repo-root> --background --json - <<'PROMPT'
 ...template below...
 PROMPT
 ```
 
-Mod: `mcp__agentcli__ask` with `scenario: "cross-check"` and `cwd` set to the
-repository, so the file reads resolve.
+Agent type: `msgate-agents:cross-check`. Engine tool: `mcp__msgate__run` with
+`purpose: "cross-check"`, `model: "gpt-6.1-sol"`, `effort: "high"`,
+`sandbox: "read-only"` and `cwd` set to the repository, so the file reads
+resolve.
 
 ## Prompt template
 
@@ -56,7 +58,7 @@ Report findings ordered by severity with file:line. Skip style.
 - Decide each one: accept and fix, the reviewer misunderstood (say why), or valid
   but not now (backlog).
 - Mostly "misunderstood" means the prompt context was thin. Improve it, then
-  `send` the correction to the same conversation.
+  follow up in the same conversation with the correction.
 
 ## Anti-patterns
 

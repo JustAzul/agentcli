@@ -1,6 +1,6 @@
 # Code review
 
-`agentcli review` runs the provider's own review of a diff and returns
+`msgate review` runs the provider's own review of a diff and returns
 severity-grouped findings with file and line. It takes exactly one target and no
 prompt: a prompt with a target is refused (exit 2), so the review cannot be
 steered. For a focused look, use cross-check.
@@ -16,13 +16,13 @@ Pick the target from git state:
 ## Dispatch
 
 ```bash
-agentcli review --scenario code-review --uncommitted --background --json
-agentcli review --scenario code-review --base master --background --json
-agentcli review --scenario code-review --commit <sha> --background --json
+msgate review --purpose code-review --model gpt-6.1-sol --effort high --sandbox read-only --uncommitted --background --json
+msgate review --purpose code-review --model gpt-6.1-sol --effort high --sandbox read-only --base master --background --json
+msgate review --purpose code-review --model gpt-6.1-sol --effort high --sandbox read-only --commit <sha> --background --json
 ```
 
 Then `wait` and `result` as in SKILL.md. With the plugin loaded, the
-`agentcli:code-review` agent type runs the same review as a background agent:
+`msgate-agents:code-review` agent type runs the same review as a background agent:
 its whole prompt is the target, `uncommitted`, `base <branch>` or
 `commit <sha>`.
 
@@ -41,10 +41,10 @@ merge of findings: start the review, return its output, and do not re-enter the
 2. Never auto-apply fixes. Each finding is a decision for the user.
 3. If you already reviewed these changes, name the overlap: what both found,
    what the other agent found that you missed, and what you found that it did not.
-4. Record the count so `agentcli stats` can report it:
+4. Record the count so `msgate stats` can report it:
 
 ```bash
-agentcli annotate <run_id> --attr-json 'review.findings={"total":3,"critical":0,"high":1,"medium":2}'
+msgate annotate <run_id> --attr-json 'review.findings={"total":3,"critical":0,"high":1,"medium":2}'
 ```
 
 ## Anti-patterns

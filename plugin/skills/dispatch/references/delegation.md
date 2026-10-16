@@ -2,7 +2,7 @@
 
 Offload a well-scoped, mechanical task to the other agent while Claude keeps
 orchestrating: boilerplate, a large refactor with a clear pattern, bulk renames,
-generated test scaffolds, schema-driven code. This is the only scenario whose
+generated test scaffolds, schema-driven code. This is the only purpose whose
 profile writes to the workspace.
 
 ## Route elsewhere when
@@ -31,7 +31,7 @@ projects. While the job runs it may be writing to the tree, so make no
 conflicting edits in the same repository until it finishes.
 
 ```bash
-agentcli exec --scenario delegation --cwd "$REPO_ROOT" --background --json - <<'PROMPT'
+msgate exec --purpose delegation --model gpt-6.1-sol --effort medium --sandbox workspace-write --cwd "$REPO_ROOT" --background --json - <<'PROMPT'
 ## Task
 [crisp description]
 
@@ -52,9 +52,11 @@ Stop and report back. Do not improvise; do not expand scope.
 PROMPT
 ```
 
-Mod: `mcp__agentcli__ask` with `scenario: "delegation"` and `cwd`. A job running
+Agent type: `msgate-agents:delegation`. Engine tool: `mcp__msgate__run` with
+`purpose: "delegation"`, `model: "gpt-6.1-sol"`, `effort: "medium"`,
+`sandbox: "workspace-write"` and `cwd`. A job running
 far past its peers means the task was not mechanical: cancel it
-(`mcp__agentcli__jobs` with `action: "cancel"`, or `agentcli cancel <run_id>`)
+(`mcp__msgate__jobs` with `action: "cancel"`, or `msgate cancel <run_id>`)
 and re-scope.
 
 ## After the run
@@ -73,7 +75,7 @@ and re-scope.
 - Tests fail afterwards: read the diff and judge whether the fault is the
   refactor or stale tests before asking the agent to fix them.
 - Stopped midway: read the output for the reason (usually the scope was wider
-  than it looked), then `send` the remainder to the same conversation.
+  than it looked), then follow up with the remainder in the same conversation.
 
 ## Anti-patterns
 

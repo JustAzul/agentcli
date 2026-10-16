@@ -6,12 +6,14 @@ has already drafted or analyzed. Its output is a critique, not code.
 ## Dispatch
 
 ```bash
-agentcli exec --scenario second-opinion --background --json - <<'PROMPT'
+msgate exec --purpose second-opinion --model gpt-6.1-sol --effort high --sandbox read-only --background --json - <<'PROMPT'
 ...template below...
 PROMPT
 ```
 
-Mod: `mcp__agentcli__ask` with `scenario: "second-opinion"` and the same prompt.
+Agent type: `msgate-agents:second-opinion`. Engine tool: `mcp__msgate__run` with
+`purpose: "second-opinion"`, `model: "gpt-6.1-sol"`, `effort: "high"`,
+`sandbox: "read-only"` and the same prompt.
 
 ## Prompt template
 
@@ -43,7 +45,7 @@ Be direct. Disagreement is the point; consensus theater is not useful here.
 - Open with the verdict: "Codex agrees" or "Codex disagrees on [X]".
 - On disagreement, do not capitulate automatically. Weigh the reasoning, then
   update the recommendation, rebut it, or put both takes in front of the user.
-- Pressing on one point is a `send` to the same conversation, not a new dispatch.
+- Pressing on one point is a follow-up to the same conversation (`msgate send`, a SendMessage, or `run` with the `conversation_id`), not a new dispatch.
 
 ## Anti-patterns
 

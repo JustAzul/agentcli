@@ -1,4 +1,4 @@
-# Working on agentcli
+# Working on msgate-agents
 
 ## Versions
 
@@ -11,7 +11,7 @@ which is what `claude plugin update` installs. The GitHub release and the
 pushed without a version bump reaches users under the previous version number
 and appears in no release.
 
-Every change to the plugin or the binary therefore bumps `VERSION` in the same
+Every change to the plugin therefore bumps `VERSION` in the same
 push, as Semantic Versioning defines it, with the public API being the
 documented contract (commands, flags, exit codes, JSON outputs, persisted
 formats, the mod's tools):
@@ -33,20 +33,22 @@ The bump is its own commit, `chore: release <version>`, which changes only
 `VERSION` and is the last commit of the push. The release notes leave that
 commit out and list the others since the previous version.
 
-Anything under `plugin/`, `cmd/` or `internal/`, `go.mod`, `go.sum` or
-`scripts/build-dist.sh` changes the build and needs a bump. A change limited to
+Anything under `plugin/` or `scripts/build-dist.sh` changes the build and
+needs a bump. A change limited to
 `README.md`, `docs/`, tests, the CI workflows or the release scripts does not.
 
 ## Before pushing a change to the plugin
 
 A change under `plugin/` can leave the mod unable to load, and then every hook
-of the plugin is gone for the whole session and for every plugin that calls the
-`agentcli` interface. The plugin tests cannot see it: a test's `$` carries only
-the engine's own interfaces, so the plugin's interface is never mounted there.
+of the plugin is gone for the whole session: the agent types are not registered
+and none is offered. The plugin tests cannot see it: a test's `$` carries only
+the engine's own interfaces, and the msgate engine's interface is faked there.
 
 Run `make verify-plugin` before every push that touches `plugin/`. It starts
-`claude -p` with this plugin, in a temporary directory with no session kept and
-a main model that does not exist, so nothing is spent on a model; it reads the
-debug log and fails unless the `agentcli` interface is mounted and the module
-loaded. The interface is an object of methods and nothing else: a member that is
-not a function unloads the plugin.
+`claude -p` with this plugin, in a temporary directory with no session kept, no
+msgate engine and a main model that does not exist, so nothing is spent on a
+model; it reads the debug log and fails unless the module loaded and the six
+agent types registered. Run `make test` too: it holds the mod tests
+(`claude plugin test plugin`), the manifest checks (the plugin manifest must
+declare no `dependencies`) and the check of the dist tree. The mod reads the
+engine only through `$.msgate`; it never runs the `msgate` binary.

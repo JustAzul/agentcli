@@ -2,7 +2,7 @@
 
 Frame the other agent as a senior practitioner in a specific domain before asking.
 "You are a senior X with N years in Y" shifts the answer toward domain-idiomatic
-substance and away from generic advice. This scenario's profile runs at the
+substance and away from generic advice. This purpose's profile runs at the
 highest default effort because the framing makes the extra thinking productive.
 
 ## Lock the persona first
@@ -23,12 +23,14 @@ answer snaps back to generic.
 ## Dispatch
 
 ```bash
-agentcli exec --scenario expert-persona --background --json - <<'PROMPT'
+msgate exec --purpose expert-persona --model gpt-6.1-sol --effort xhigh --sandbox read-only --background --json - <<'PROMPT'
 ...template below...
 PROMPT
 ```
 
-Mod: `mcp__agentcli__ask` with `scenario: "expert-persona"`.
+Agent type: `msgate-agents:expert-persona`. Engine tool: `mcp__msgate__run` with
+`purpose: "expert-persona"`, `model: "gpt-6.1-sol"`, `effort: "xhigh"` and
+`sandbox: "read-only"`.
 
 ## Prompt template
 
