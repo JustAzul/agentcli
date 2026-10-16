@@ -4,23 +4,29 @@ on:
   push:
   pull_request:
 
+# The PII scan is the engine's tool, run at a pinned version: bump the pin when
+# the tool changes. The plugin tests (claude plugin test) are a local gate, run
+# before every push that touches plugin/; CI has no Claude Code.
+env:
+  PIISCAN: github.com/JustAzul/cc-msgate/tools/piiscan@v1.0.0
+
 jobs:
-  test:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
-    env:
-      CGO_ENABLED: "0"
+  check:
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version: 1.27.x
-      - name: Vet
-        run: go vet ./...
-      - name: Test
-        run: go test ./...
+      - name: Manifests
+        run: scripts/test-manifests.sh
+      - name: Dispatch skill
+        run: scripts/test-skill.sh
+      - name: Dist tree
+        run: scripts/test-dist.sh
       - name: PII scan of tracked files
-        run: go run ./tools/piiscan --tracked .
+        run: go run "$PIISCAN" --tracked .
+      - name: Build dist tree
+        run: sh scripts/build-dist.sh "$RUNNER_TEMP/dist"
+      - name: PII scan of the dist tree
+        run: go run "$PIISCAN" --allowlist testdata/pii-allowlist.txt "$RUNNER_TEMP/dist"

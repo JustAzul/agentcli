@@ -1,48 +1,35 @@
-# All Go tooling runs inside a pinned container; nothing but Docker is needed on the host.
-GO_IMAGE   ?= golang:1.27.1-bookworm
-CACHE_DIR  ?= $(HOME)/.cache/agentcli-go
-VERSION    := $(shell cat VERSION)
-SOURCE_SHA := $(shell git rev-parse HEAD 2>/dev/null || echo unknown)
-BUILD_SEQ  := $(shell git rev-list --count HEAD 2>/dev/null || echo 0)
-LDFLAGS    := -s -w -X github.com/JustAzul/agentcli/internal/version.Version=$(VERSION) -X github.com/JustAzul/agentcli/internal/version.SourceCommit=$(SOURCE_SHA) -X github.com/JustAzul/agentcli/internal/version.BuildSeq=$(BUILD_SEQ)
+# The plugin has no binary and needs no container: the tests, the dist build
+# and the load check need only claude, jq and a POSIX shell on the host.
+VERSION := $(shell cat VERSION)
 
-DOCKER_GO = docker run --rm --label agentcli.dev=1 -u $$(id -u):$$(id -g) \
-  -v $(CURDIR):/src -w /src \
-  -v $(CACHE_DIR)/mod:/gomod -v $(CACHE_DIR)/build:/gocache \
-  -e GOMODCACHE=/gomod -e GOCACHE=/gocache -e HOME=/tmp \
-  -e GOFLAGS=-buildvcs=false -e CGO_ENABLED=0 \
-  $(GO_IMAGE)
+.PHONY: test test-plugin test-manifests test-skill test-dist dist verify-plugin validate
 
-.PHONY: test vet vet-darwin fmt build cache dist verify-plugin
+# Every check that runs without a model: the mod tests, the manifests as files,
+# the dispatch skill as text and the dist tree.
+test: test-plugin test-manifests test-skill test-dist
 
-cache:
-	mkdir -p $(CACHE_DIR)/mod $(CACHE_DIR)/build
+test-plugin:
+	claude plugin test plugin
 
-test: cache
-	$(DOCKER_GO) go test ./... $(TESTFLAGS)
+test-manifests:
+	scripts/test-manifests.sh
 
-vet: cache
-	$(DOCKER_GO) go vet ./...
+test-skill:
+	scripts/test-skill.sh
 
-# Compile-and-vet check for the darwin-only files; they cannot run here.
-vet-darwin: cache
-	$(DOCKER_GO) env GOOS=darwin GOARCH=arm64 go vet ./...
-	$(DOCKER_GO) env GOOS=darwin GOARCH=amd64 go vet ./...
+test-dist:
+	scripts/test-dist.sh
 
-fmt: cache
-	$(DOCKER_GO) gofmt -l -w cmd internal test tools
-
-build: cache
-	$(DOCKER_GO) go build -trimpath -ldflags '$(LDFLAGS)' -o build/agentcli ./cmd/agentcli
-
-# Same tree CI publishes to the dist branch, built inside the pinned container.
-# git metadata is not visible in the container, so the host passes it in.
-dist: cache
+# The tree CI publishes to the dist branch.
+dist:
 	rm -rf dist
-	$(DOCKER_GO) env SOURCE_SHA=$(SOURCE_SHA) BUILD_SEQ=$(BUILD_SEQ) sh scripts/build-dist.sh dist
+	sh scripts/build-dist.sh dist
 
 # Loads the plugin in a real Claude Code process, with no model spend, and fails
-# unless its `agentcli` interface mounts. Needs claude on PATH; run it before
-# any push that touches plugin/.
+# unless its module loaded (with no engine installed, the types are hidden). Needs
+# claude on PATH; run it before any push that touches plugin/.
 verify-plugin:
 	scripts/verify-plugin.sh
+
+validate:
+	claude plugin validate plugin

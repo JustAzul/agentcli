@@ -1,17 +1,4 @@
 {
-  "hooks": {
-    "SessionStart": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/bin/agentcli link --quiet; \"${CLAUDE_PLUGIN_ROOT}\"/bin/agentcli prune --auto",
-            "timeout": 5
-          }
-        ]
-      }
-    ]
-  },
   "modules": [
     "./register.js"
   ]

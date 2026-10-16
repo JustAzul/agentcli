@@ -1,18 +1,18 @@
 {
-  "name": "agentcli",
+  "name": "msgate-agents",
   "owner": {
     "name": "JustAzul"
   },
   "metadata": {
-    "description": "Marketplace for agentcli, a provider-agnostic CLI for driving agent CLIs from Claude Code."
+    "description": "Marketplace for msgate-agents, the ready-made agent types (second opinion, code review and others) that the msgate engine plugin answers."
   },
   "plugins": [
     {
-      "name": "agentcli",
-      "description": "agentcli: drive agent CLIs (Codex today) from Claude Code, hooks and scripts.",
+      "name": "msgate-agents",
+      "description": "msgate-agents: ready-made agent types and the dispatch skill for the msgate engine plugin (needs msgate 1.x).",
       "source": {
         "source": "github",
-        "repo": "JustAzul/agentcli",
+        "repo": "JustAzul/msgate-agents",
         "ref": "dist"
       }
     }
