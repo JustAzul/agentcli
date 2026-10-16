@@ -24,6 +24,9 @@ jobs:
       # release tags name dist builds, which hold no Go module). Bump the pin when
       # the tool changes.
       PIISCAN: github.com/JustAzul/cc-msgate/tools/piiscan@05d04bfd34e829e253f4152e7d81fda2bd40aa5e
+      # The engine's v* tags name dist builds, which the checksum database cannot
+      # verify as module versions; the commit pin already fixes the code.
+      GONOSUMDB: github.com/JustAzul/cc-msgate
     steps:
       - uses: actions/checkout@v4
         with:
