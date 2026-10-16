@@ -20,8 +20,10 @@ jobs:
   dist:
     runs-on: ubuntu-latest
     env:
-      # The engine's PII scan, at a pinned version: bump the pin when the tool changes.
-      PIISCAN: github.com/JustAzul/cc-msgate/tools/piiscan@v1.0.0
+      # The engine's PII scan, pinned to a commit of the engine's main branch (its
+      # release tags name dist builds, which hold no Go module). Bump the pin when
+      # the tool changes.
+      PIISCAN: github.com/JustAzul/cc-msgate/tools/piiscan@05d04bfd34e829e253f4152e7d81fda2bd40aa5e
     steps:
       - uses: actions/checkout@v4
         with:

@@ -4,11 +4,13 @@ on:
   push:
   pull_request:
 
-# The PII scan is the engine's tool, run at a pinned version: bump the pin when
-# the tool changes. The plugin tests (claude plugin test) are a local gate, run
-# before every push that touches plugin/; CI has no Claude Code.
+# The PII scan is the engine's tool, pinned to a commit of the engine's main
+# branch: the engine's release tags name its dist builds, which hold no Go
+# module. Bump the pin when the tool changes. The plugin tests (claude plugin
+# test) are a local gate, run before every push that touches plugin/; CI has
+# no Claude Code.
 env:
-  PIISCAN: github.com/JustAzul/cc-msgate/tools/piiscan@v1.0.0
+  PIISCAN: github.com/JustAzul/cc-msgate/tools/piiscan@05d04bfd34e829e253f4152e7d81fda2bd40aa5e
 
 jobs:
   check:
