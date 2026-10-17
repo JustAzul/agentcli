@@ -71,8 +71,7 @@ count_log() {
 # line says it failed, was unloaded or had a hook skipped. Returns 1 on a miss.
 check_loaded() {
   local failed=0
-  grep -E -q 'hooks module msgate-agents@[^ ]+ loaded .*events: .*session\.start.*agent\.offer' "$1"
-  if [ $? -ne 0 ]; then
+  if ! grep -E -q 'hooks module msgate-agents@[^ ]+ loaded .*events: .*session\.start.*agent\.offer' "$1"; then
     echo "verify-plugin: the log does not show the msgate-agents hooks module loaded with session.start and agent.offer" >&2
     failed=1
   fi
