@@ -21,6 +21,8 @@ set -u
 
 root=$(cd "$(dirname "$0")/.." && pwd)
 plugin=${1:-$root/plugin}
+# Absolute, because claude_load starts claude from a directory of its own.
+plugin=$(cd "$plugin" 2>/dev/null && pwd) || plugin=${1:-$root/plugin}
 if [ ! -f "$plugin/.claude-plugin/plugin.json" ]; then
   echo "verify-plugin: no plugin at $plugin" >&2
   exit 2
