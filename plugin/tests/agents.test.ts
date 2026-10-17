@@ -325,18 +325,33 @@ test('a refused run is kept in the session state so it is not tried again after 
   expect(w.tried.value).toEqual(['run-a'])
 })
 
-test('the session state keeps the 200 newest tried runs', async ($, on) => {
+test('more listed refused runs than the cap are never tried again, however many polls pass', async ($, on) => {
   const w = world(on, present('1.1.0'))
   const runs = Array.from({ length: 205 }, (_, i) => ({ ...RUN_A, run_id: 'run-' + i }))
   w.flaggedRuns = async () => runs
+  w.spawnAnswer = () => ({ deny: 'msgate: a hidden row does not open in the auto permission mode' })
+  await $.session.start(START)
+  await w.clock.advance(TICK * 4)
+
+  expect(w.spawns).toHaveLength(205)
+  expect(w.debugLogs.filter((line) => line.includes('no row opened'))).toHaveLength(205)
+})
+
+test('past the cap the record drops the oldest runs that are no longer listed, and keeps the 200 newest', async ($, on) => {
+  const w = world(on, present('1.1.0'))
+  const run = (i: number) => ({ ...RUN_A, run_id: 'run-' + i })
+  w.flaggedRuns = async () => Array.from({ length: 205 }, (_, i) => run(i))
   await $.session.start(START)
   await w.clock.advance(TICK)
 
+  w.flaggedRuns = async () => [run(204), run(205)]
+  await w.clock.advance(TICK)
+
   const kept = w.tried.value as string[]
-  expect(w.spawns).toHaveLength(205)
   expect(kept).toHaveLength(200)
-  expect(kept[0]).toBe('run-5')
-  expect(kept[199]).toBe('run-204')
+  expect(kept[0]).toBe('run-6')
+  expect(kept[199]).toBe('run-205')
+  expect(w.spawns.map((s) => s.prompt).slice(205)).toEqual(['msgate run run-205'])
 })
 
 test('a write to the record of tried runs that loses to another write is redone against what that write left', async ($, on) => {

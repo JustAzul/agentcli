@@ -15,9 +15,10 @@ declare module 'claude-code' {
       // The session was already told the engine is missing, so a reload of the
       // plugin does not say it again.
       engineNoticeShown: boolean
-      // The ids of the runs whose hidden row was tried in this session, the
-      // newest 200: a run the engine refused a row is not listed as having one,
-      // so a reloaded plugin would otherwise try it again.
+      // The ids of the runs whose hidden row was tried in this session. A run
+      // the engine refused a row never gets one and stays listed, so a reloaded
+      // plugin would otherwise try it again. Kept to 200 by dropping the oldest,
+      // never one whose run the engine still lists.
       triedRuns: string[]
     }
   }

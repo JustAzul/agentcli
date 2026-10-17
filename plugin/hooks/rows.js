@@ -49,6 +49,18 @@ const TRIED_RUNS = { plugin: 'msgate-agents', key: 'triedRuns' }
 const TRIED_CAP = 200
 const CLAIM_ATTEMPTS = 3
 
+// withinCap drops the oldest ids over the cap, passing over the ids of runs the
+// engine still lists: forgetting one of those would try its run again. Past the
+// cap with that many runs listed, the record is longer than the cap.
+function withinCap(ids, listed) {
+  let excess = ids.length - TRIED_CAP
+  return ids.filter((id) => {
+    if (excess <= 0 || listed.has(id)) return true
+    excess--
+    return false
+  })
+}
+
 // claimNewRuns marks the listed runs not yet tried as tried and returns them. A
 // write that lost to another write is redone against what that write left.
 async function claimNewRuns($, runs) {
@@ -56,7 +68,7 @@ async function claimNewRuns($, runs) {
     const { value = [], version } = await $.state.get(TRIED_RUNS)
     const fresh = runs.filter((run) => !value.includes(run.run_id))
     if (fresh.length === 0) return []
-    const kept = value.concat(fresh.map((run) => run.run_id)).slice(-TRIED_CAP)
+    const kept = withinCap(value.concat(fresh.map((run) => run.run_id)), new Set(runs.map((run) => run.run_id)))
     if ((await $.state.set(TRIED_RUNS, kept, { ifVersion: version })).isSet) return fresh
   }
   throw new Error('the record of tried runs kept changing')
