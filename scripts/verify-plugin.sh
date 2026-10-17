@@ -133,7 +133,8 @@ if [ -z "${MSGATE_ENGINE_DIR:-}" ]; then
   exit "$status"
 fi
 
-engine=$MSGATE_ENGINE_DIR
+# Absolute, because claude_load starts claude from a directory of its own.
+engine=$(cd "$MSGATE_ENGINE_DIR" 2>/dev/null && pwd) || engine=$MSGATE_ENGINE_DIR
 if [ ! -f "$engine/.claude-plugin/plugin.json" ] || [ ! -x "$engine/bin/msgate" ]; then
   echo "verify-plugin: MSGATE_ENGINE_DIR is not an engine plugin directory (needs .claude-plugin/plugin.json and bin/msgate): $engine" >&2
   exit 2
