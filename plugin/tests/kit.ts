@@ -33,6 +33,10 @@ export function world(on: any, engine: Engine = present()) {
     // The runs the engine reports as flagged, and what each spawn answers; a test sets them.
     flaggedCalls: 0,
     flaggedRuns: (async () => []) as () => Promise<FlaggedRun[]>,
+    // The session's record of the runs tried, which outlives a load of the plugin: a test seeds it to model a reload.
+    tried: { value: undefined as string[] | undefined, version: 0 },
+    // Another write to the record that lands just before the plugin's next one.
+    rivalTriedWrite: null as string[] | null,
     spawns: [] as SpawnArgs[],
     spawnAnswer: ((_args: SpawnArgs) => ({ model: 'haiku', agentId: 'row' })) as (args: SpawnArgs) => any,
   }
@@ -68,6 +72,17 @@ export function world(on: any, engine: Engine = present()) {
   on('agent.register', (_$: any, e: any) => {
     w.agentTypes.push(e)
     return { value: { agent: 'msgate-agents:' + e.name } }
+  })
+  on('state.get', (_$: any, e: any, next: any) => (e.key === 'triedRuns' ? { value: { value: w.tried.value, version: w.tried.version } } : next(e)))
+  on('state.set', (_$: any, e: any, next: any) => {
+    if (e.key !== 'triedRuns') return next(e)
+    if (w.rivalTriedWrite !== null) {
+      w.tried = { value: w.rivalTriedWrite, version: w.tried.version + 1 }
+      w.rivalTriedWrite = null
+    }
+    if (e.ifVersion !== undefined && e.ifVersion !== w.tried.version) return { value: { isSet: false, version: w.tried.version } }
+    w.tried = { value: e.value, version: w.tried.version + 1 }
+    return { value: { isSet: true, version: w.tried.version } }
   })
   on('agent.spawn', (_$: any, e: any) => {
     // The kit's bottom sees the call as the Agent tool takes it.

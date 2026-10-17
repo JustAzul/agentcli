@@ -302,3 +302,50 @@ test('a reload that finds the engine gone leaves no timer', async ($, on) => {
 
   expect(w.flaggedCalls).toBe(0)
 })
+
+test('a run the plugin tried before a reload is not spawned or logged again', async ($, on) => {
+  const w = world(on, present('1.1.0'))
+  w.flaggedRuns = async () => [RUN_A, RUN_B]
+  // The session remembers what an earlier load of the plugin tried; the new load starts with nothing in memory.
+  w.tried = { value: ['run-a'], version: 1 }
+  await $.session.start(START)
+  await w.clock.advance(TICK * 2)
+
+  expect(w.spawns.map((s) => s.prompt)).toEqual(['msgate run run-b'])
+  expect(logsAbout(w, 'run-a')).toEqual([])
+})
+
+test('a refused run is kept in the session state so it is not tried again after a reload', async ($, on) => {
+  const w = world(on, present('1.1.0'))
+  w.flaggedRuns = async () => [RUN_A]
+  w.spawnAnswer = () => ({ deny: 'msgate: a hidden row does not open in the auto permission mode' })
+  await $.session.start(START)
+  await w.clock.advance(TICK)
+
+  expect(w.tried.value).toEqual(['run-a'])
+})
+
+test('the session state keeps the 200 newest tried runs', async ($, on) => {
+  const w = world(on, present('1.1.0'))
+  const runs = Array.from({ length: 205 }, (_, i) => ({ ...RUN_A, run_id: 'run-' + i }))
+  w.flaggedRuns = async () => runs
+  await $.session.start(START)
+  await w.clock.advance(TICK)
+
+  const kept = w.tried.value as string[]
+  expect(w.spawns).toHaveLength(205)
+  expect(kept).toHaveLength(200)
+  expect(kept[0]).toBe('run-5')
+  expect(kept[199]).toBe('run-204')
+})
+
+test('a write to the record of tried runs that loses to another write is redone against what that write left', async ($, on) => {
+  const w = world(on, present('1.1.0'))
+  w.flaggedRuns = async () => [RUN_A, RUN_B]
+  w.rivalTriedWrite = ['run-b']
+  await $.session.start(START)
+  await w.clock.advance(TICK)
+
+  expect(w.spawns.map((s) => s.prompt)).toEqual(['msgate run run-a'])
+  expect(w.tried.value).toEqual(['run-b', 'run-a'])
+})

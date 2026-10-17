@@ -41,18 +41,32 @@ function logRefused($, run, reason) {
   $.ui.log('msgate-agents: no row opened for run ' + run.run_id + ': ' + reason, { to: 'debug' })
 }
 
-async function openNewRows($) {
-  for (const run of await $.msgate.flaggedRuns()) {
-    if (tried.has(run.run_id)) continue
-    tried.add(run.run_id)
-    await openRow($, run)
+// The runs already tried in this session live in the session's state, not in
+// the plugin's memory: a reload of the plugin keeps them. A run is tried once:
+// the engine stops listing a run once it has a row, but a refused run never
+// gets one and stays listed.
+const TRIED_RUNS = { plugin: 'msgate-agents', key: 'triedRuns' }
+const TRIED_CAP = 200
+const CLAIM_ATTEMPTS = 3
+
+// claimNewRuns marks the listed runs not yet tried as tried and returns them. A
+// write that lost to another write is redone against what that write left.
+async function claimNewRuns($, runs) {
+  for (let attempt = 0; attempt < CLAIM_ATTEMPTS; attempt++) {
+    const { value = [], version } = await $.state.get(TRIED_RUNS)
+    const fresh = runs.filter((run) => !value.includes(run.run_id))
+    if (fresh.length === 0) return []
+    const kept = value.concat(fresh.map((run) => run.run_id)).slice(-TRIED_CAP)
+    if ((await $.state.set(TRIED_RUNS, kept, { ifVersion: version })).isSet) return fresh
   }
+  throw new Error('the record of tried runs kept changing')
 }
 
-// The runs already tried in this load of the plugin, and the timer that polls
-// for new ones. A run is tried once: the engine stops listing a run once it
-// has a row, and a refused run is not asked again.
-const tried = new Set()
+async function openNewRows($) {
+  for (const run of await claimNewRuns($, await $.msgate.flaggedRuns())) await openRow($, run)
+}
+
+// The timer that polls for new runs, and whether a poll is running.
 let timer = null
 let isPolling = false
 let lastListFailure = null
